@@ -1,0 +1,8 @@
+einops==0.8.0
+h5py==3.9.0
+numpy==1.24.4
+PyYAML==6.0.2
+setuptools==68.0.0
+tqdm==4.65.0
+torch==1.8.1+cu111
+wandb

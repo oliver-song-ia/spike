@@ -24,7 +24,7 @@ The code has been tested with the following environment:
 
 1. Clone the repository:
    ```bash
-   git clone https://github.com/iballester/spike
+   git clone https://github.com/oliver-song-ia/spike
    cd spike
    ```
 
@@ -39,15 +39,36 @@ The code has been tested with the following environment:
    python setup.py install
    ```
 
+## 📁 Project Structure
+
+Key files for robot planning pipeline:
+
+```
+SPiKE/
+├── convert_itop_to_training.py     # Independent data conversion script
+├── pose_detector.py                # ROS2 real-time pose detection node
+├── generate_predicted_pose.py      # Trajectory generation for robot planning
+├── train_itop.py                   # Model training script
+├── experiments/Custom/1/
+│   └── config.yaml                 # Custom dataset configuration
+├── model/
+│   ├── model_builder.py            # Model creation with CUSTOM dataset support
+│   └── spike.py                    # SPiKE transformer architecture
+└── utils/
+    └── config_utils.py             # Configuration utilities with path management
+```
+
 ---
 
-## 📝 How to run SPiKE for ITOP
+## 📝 How to run SPiKE
+
+### For ITOP Dataset
 
 1. Download the ITOP SIDE dataset (point clouds and labels) from [ITOP Dataset | Zenodo](https://zenodo.org/record/3932973#.Yp8SIxpBxPA) and unzip its contents.
 
-2. Isolate points corresponding to the human body in the point clouds and save the results as `.npz` files. 
+2. Isolate points corresponding to the human body in the point clouds and save the results as `.npz` files.
 - You can use the provided script `utils/preprocess_itop.py` as an example. This script takes the original `.h5` files, removes the background by clustering and depth thresholding (see the paper for more details) and saves the results as point cloud sequences in `.npz` format. To run this script, make sure you have the open3d library installed.
-  
+
 3. Update the `ITOP_SIDE_PATH` variable in `const/path` to point to your dataset location. Structure your dataset directory as follows:
 
    ```
@@ -58,69 +79,77 @@ The code has been tested with the following environment:
    ├── train_labels.h5 # Labels for the training set
    ```
 
+### For Custom Dataset (Robot Planning Pipeline)
+
+1. **Data Conversion**: Convert your cleaned ITOP-format data to training format using the independent conversion script:
+   ```bash
+   python convert_itop_to_training.py --itop-dir /path/to/itop/format/data --train-dir /path/to/training/data --labels-file /path/to/train_labels.h5
+   ```
+   This script directly converts ITOP format data to training format without intermediate files, including arm labels for robot planner usage.
+
+2. **Model Training**: Configure the dataset paths in your config file (`experiments/Custom/1/config.yaml`) and train the pose detection model:
+   ```bash
+   python train_itop.py --config experiments/Custom/1
+   ```
+
+3. **Inference and Trajectory Generation**: Use the trained model to predict human poses on the entire dataset and generate trajectory CSV files for robot planning:
+   ```bash
+   python generate_predicted_pose.py
+   ```
+   This generates both predicted pose trajectories and ground truth trajectories for robot planner usage.
+
+4. **Real-time ROS2 Integration**: Run the pose detector node for real-time pose detection from point cloud streams:
+   ```bash
+   python pose_detector.py
+   ```
+   This subscribes to `/human_pointcloud` topic and publishes skeleton visualization to `/pose_detection` topic in MarkerArray format.
+
 ---
 
 ## 🚀 Usage
 
 ### Training
 
-To train the model, check that the config.yaml has the correct parameters and run:
+To train the model, configure your dataset paths in the config file and run:
 
 ```bash
-python train_itop.py --config experiments/ITOP-SIDE/1/config.yaml
+python train_itop.py --config experiments/Custom/1
 ```
 
 ### Inference
 
-For predictions, update the path pointing to the model weights, check that the config.yaml has the correct parameters and run:
+For predictions on ITOP dataset, update the path pointing to the model weights and run:
 
 ```bash
 python predict_itop.py --config experiments/ITOP-SIDE/1/config.yaml --model experiments/ITOP-SIDE/1/log/model.pth
 ```
 
-You can download our model weights here: [Download Model Weights.](https://cloud.cvl.tuwien.ac.at/s/ATCBp34rH3fGJ23)
+For trajectory generation and robot planning applications:
 
----
-
-## 🎥 Qualitative Results
-
-For video samples showcasing pose predictions on the testing set, please visit:
-
-- [Video 1](https://youtu.be/mk_UffjtTlM)
-- [Video 2](https://youtu.be/YZXXY0DLQWo)
-- [Video 3](https://youtu.be/8j7yt-1sToU)
-- [Video 4](https://youtu.be/ZQQSviiT7Sw)
-- [Video 5](https://youtu.be/MvvgQYlsYlY)
-- [Video 6](https://youtu.be/IMvdci9RgAM)
-
----
-
-## 📚 Citation
-
-If you find our work useful, we'd really appreciate it if you cite us:
-
-```bibtex
-@inproceedings{ballester2024spike,
-  title={SPiKE: 3D Human Pose from Point Cloud Sequences},
-  author={Ballester, Irene and Peterka, Ond{\v{r}}ej and Kampel, Martin},
-  booktitle={Pattern Recognition},
-  year={2024}
-}
+```bash
+python generate_predicted_pose.py
 ```
 
----
+You can download our model weights here: [Download Model Weights.](https://cloud.cvl.tuwien.ac.at/s/ATCBp34rH3fGJ23)
 
-## 🙏 Acknowledgments
+### Real-time ROS2 Pose Detection
 
-A big thanks to the following open-source projects for their contributions:
+Launch the pose detector node with custom parameters:
 
-1. [PointNet++ PyTorch Implementation (VoteNet)](https://github.com/facebookresearch/votenet/tree/master/pointnet2)
-2. [P4Transformer](https://github.com/hehefan/P4Transformer)
+```bash
+python pose_detector.py --ros-args -p config_path:=experiments/Custom/1 -p model_path:=experiments/Custom/1/log/best_model.pth -p device:=cuda:0
+```
 
-Their work greatly facilitated the development of this project.
+The node will:
+- Subscribe to `/human_pointcloud` (PointCloud2 messages)
+- Publish skeleton visualization to `/pose_detection` (MarkerArray messages)
+- Display real-time inference timing information
 
----
+### Configuration
 
-## 📜 License
-
-This project is licensed under the MIT License. See the [LICENSE](./LICENSE) file for details.
+The custom dataset configuration (`experiments/Custom/1/config.yaml`) includes:
+- Dataset paths: `experiments_path` and `dataset_path`
+- Model parameters: transformer depth, heads, dimensions
+- Training parameters: batch size, learning rate, epochs
+- Joint weights: upper body joints weighted at 1.0, lower body at 0.0
+- Data augmentation: center, rotation, and mirror augmentations

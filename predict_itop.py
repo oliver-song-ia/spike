@@ -94,13 +94,13 @@ if __name__ == "__main__":
     parser.add_argument(
         "--config",
         type=str,
-        default="experiments/ITOP-SIDE/1",
+        default="experiments/Custom/1",
         help="Path to the YAML config file",
     )
     parser.add_argument(
         "--model",
         type=str,
-        default="experiments/ITOP-SIDE/1/log/best_model.pth",
+        default="experiments/Custom/1/log/best_model.pth",
         help="Path to the model checkpoint",
     )
 

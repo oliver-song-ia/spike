@@ -16,25 +16,39 @@ sys.path.append('/home/oliver/Documents/SPiKE')
 from const import skeleton_joints
 
 
-def load_training_data(train_dir, labels_file, num_samples=5):
+def load_training_data(train_dir, labels_file, arm_labels_file, num_samples=5):
     """
-    Load random samples from training data
+    Load random samples from training data including arm coordinates
 
     Args:
         train_dir: Path to directory with .npz point cloud files
         labels_file: Path to train_labels.h5 file
+        arm_labels_file: Path to arm_labels.h5 file
         num_samples: Number of random samples to load
 
     Returns:
-        List of (point_cloud, joints, identifier) tuples
+        List of (point_cloud, joints, arm_data, identifier) tuples
     """
     samples = []
 
-    # Load labels
+    # Load main labels
     with h5py.File(labels_file, 'r') as f:
         identifiers = f['id'][:]
         joint_coords = f['real_world_coordinates'][:]
         is_valid = f['is_valid'][:]
+
+    # Load arm labels
+    arm_data = {}
+    if os.path.exists(arm_labels_file):
+        with h5py.File(arm_labels_file, 'r') as f:
+            arm_identifiers = f['id'][:]
+            if 'left_arm_coords' in f:
+                arm_data['left_arm_coords'] = f['left_arm_coords'][:]
+            if 'right_arm_coords' in f:
+                arm_data['right_arm_coords'] = f['right_arm_coords'][:]
+        print(f"Loaded arm data: {list(arm_data.keys())}")
+    else:
+        print("Warning: arm_labels.h5 not found, arm visualization will be skipped")
 
     # Get indices of valid frames
     valid_indices = [i for i, v in enumerate(is_valid) if v]
@@ -50,6 +64,12 @@ def load_training_data(train_dir, labels_file, num_samples=5):
         identifier = identifiers[idx].decode('utf-8')
         joints = joint_coords[idx]
 
+        # Get corresponding arm data for this frame
+        frame_arm_data = {}
+        for arm_key, arm_coords in arm_data.items():
+            if idx < len(arm_coords):
+                frame_arm_data[arm_key] = arm_coords[idx]
+
         # Load point cloud file
         # Extract frame number from identifier (format: "XX_YYYYY")
         frame_num = int(identifier.split('_')[-1])
@@ -58,22 +78,24 @@ def load_training_data(train_dir, labels_file, num_samples=5):
         if os.path.exists(pc_file):
             pc_data = np.load(pc_file)
             point_cloud = pc_data['arr_0']
-            samples.append((point_cloud, joints, identifier))
-            print(f"Loaded sample {identifier}: {point_cloud.shape[0]} points, joints shape {joints.shape}")
+            samples.append((point_cloud, joints, frame_arm_data, identifier))
+            arm_info = f", arms: {list(frame_arm_data.keys())}" if frame_arm_data else ""
+            print(f"Loaded sample {identifier}: {point_cloud.shape[0]} points, joints shape {joints.shape}{arm_info}")
         else:
             print(f"Warning: Point cloud file not found for {identifier}")
 
     return samples
 
 
-def visualize_frame(ax, point_cloud, joints, identifier, downsample_points=2000):
+def visualize_frame(ax, point_cloud, joints, arm_data, identifier, downsample_points=2000):
     """
-    Visualize a single frame with point cloud and skeleton
+    Visualize a single frame with point cloud, skeleton, and arm coordinates
 
     Args:
         ax: Matplotlib 3D axis
         point_cloud: Nx3 array of point coordinates
         joints: 15x3 array of joint coordinates
+        arm_data: Dictionary with arm coordinate data
         identifier: Frame identifier string
         downsample_points: Number of points to display for performance
     """
@@ -92,7 +114,7 @@ def visualize_frame(ax, point_cloud, joints, identifier, downsample_points=2000)
 
     # Plot skeleton joints
     ax.scatter(joints[:, 0], joints[:, 1], joints[:, 2],
-              c='red', s=100, alpha=1.0, label='Joints')
+              c='red', s=100, alpha=1.0, label='Body Joints')
 
     # Draw skeleton connections
     for connection in skeleton_joints.joint_connections:
@@ -104,15 +126,47 @@ def visualize_frame(ax, point_cloud, joints, identifier, downsample_points=2000)
                  [start_pos[2], end_pos[2]],
                  color=color, linewidth=2)
 
+    # Plot arm coordinates if available
+    if 'left_arm_coords' in arm_data:
+        left_arm = arm_data['left_arm_coords']  # Shape: (2, 3)
+        ax.scatter(left_arm[:, 0], left_arm[:, 1], left_arm[:, 2],
+                  c='green', s=150, alpha=1.0, marker='^', label='Left Arm')
+        # Connect left arm points
+        if len(left_arm) == 2:
+            ax.plot3D([left_arm[0, 0], left_arm[1, 0]],
+                     [left_arm[0, 1], left_arm[1, 1]],
+                     [left_arm[0, 2], left_arm[1, 2]],
+                     color='green', linewidth=3, alpha=0.8)
+
+    if 'right_arm_coords' in arm_data:
+        right_arm = arm_data['right_arm_coords']  # Shape: (2, 3)
+        ax.scatter(right_arm[:, 0], right_arm[:, 1], right_arm[:, 2],
+                  c='orange', s=150, alpha=1.0, marker='v', label='Right Arm')
+        # Connect right arm points
+        if len(right_arm) == 2:
+            ax.plot3D([right_arm[0, 0], right_arm[1, 0]],
+                     [right_arm[0, 1], right_arm[1, 1]],
+                     [right_arm[0, 2], right_arm[1, 2]],
+                     color='orange', linewidth=3, alpha=0.8)
+
     # Add joint labels
     for idx, joint_name in skeleton_joints.joint_indices.items():
         pos = joints[idx]
-        ax.text(pos[0], pos[1], pos[2], joint_name, fontsize=8)
+        ax.text(pos[0], pos[1], pos[2], joint_name, fontsize=6)
+
+    # Add arm labels if available
+    if 'left_arm_coords' in arm_data:
+        for i, pos in enumerate(arm_data['left_arm_coords']):
+            ax.text(pos[0], pos[1], pos[2], f'L{i+1}', fontsize=8, color='green')
+
+    if 'right_arm_coords' in arm_data:
+        for i, pos in enumerate(arm_data['right_arm_coords']):
+            ax.text(pos[0], pos[1], pos[2], f'R{i+1}', fontsize=8, color='orange')
 
     # Set axis properties
-    ax.set_xlabel('X')
-    ax.set_ylabel('Y')
-    ax.set_zlabel('Z')
+    ax.set_xlabel('X (mm)')
+    ax.set_ylabel('Y (mm)')
+    ax.set_zlabel('Z (mm)')
     ax.set_title(f'Frame: {identifier}')
 
     # Set equal aspect ratio
@@ -138,7 +192,7 @@ def create_multi_frame_visualization(samples):
     Create a figure with multiple subplots for each sample
 
     Args:
-        samples: List of (point_cloud, joints, identifier) tuples
+        samples: List of (point_cloud, joints, arm_data, identifier) tuples
     """
     n_samples = len(samples)
 
@@ -157,11 +211,11 @@ def create_multi_frame_visualization(samples):
         rows, cols = 3, 3
         n_samples = min(n_samples, 9)  # Limit to 9 subplots
 
-    for i, (point_cloud, joints, identifier) in enumerate(samples[:n_samples]):
+    for i, (point_cloud, joints, arm_data, identifier) in enumerate(samples[:n_samples]):
         ax = fig.add_subplot(rows, cols, i + 1, projection='3d')
-        visualize_frame(ax, point_cloud, joints, identifier)
+        visualize_frame(ax, point_cloud, joints, arm_data, identifier)
 
-    plt.suptitle('SPiKE Training Data Samples', fontsize=16)
+    plt.suptitle('SPiKE Training Data Samples (with Arm GT)', fontsize=16)
     plt.tight_layout()
 
 
@@ -170,13 +224,13 @@ def print_data_statistics(samples):
     Print statistics about the loaded samples
 
     Args:
-        samples: List of (point_cloud, joints, identifier) tuples
+        samples: List of (point_cloud, joints, arm_data, identifier) tuples
     """
     print("\n" + "="*50)
-    print("Training Data Statistics")
+    print("Training Data Statistics (with Arm GT)")
     print("="*50)
 
-    for i, (point_cloud, joints, identifier) in enumerate(samples):
+    for i, (point_cloud, joints, arm_data, identifier) in enumerate(samples):
         print(f"\nSample {i+1} (ID: {identifier}):")
         print(f"  Point cloud shape: {point_cloud.shape}")
         print(f"  Points range: X[{point_cloud[:, 0].min():.2f}, {point_cloud[:, 0].max():.2f}], "
@@ -186,6 +240,18 @@ def print_data_statistics(samples):
         print(f"  Joints range: X[{joints[:, 0].min():.2f}, {joints[:, 0].max():.2f}], "
               f"Y[{joints[:, 1].min():.2f}, {joints[:, 1].max():.2f}], "
               f"Z[{joints[:, 2].min():.2f}, {joints[:, 2].max():.2f}]")
+
+        # Print arm data statistics
+        if arm_data:
+            print(f"  Arm data available: {list(arm_data.keys())}")
+            for arm_key, arm_coords in arm_data.items():
+                if len(arm_coords) > 0:
+                    print(f"  {arm_key} shape: {arm_coords.shape}")
+                    print(f"  {arm_key} range: X[{arm_coords[:, 0].min():.2f}, {arm_coords[:, 0].max():.2f}], "
+                          f"Y[{arm_coords[:, 1].min():.2f}, {arm_coords[:, 1].max():.2f}], "
+                          f"Z[{arm_coords[:, 2].min():.2f}, {arm_coords[:, 2].max():.2f}]")
+        else:
+            print(f"  No arm data available")
 
         # Check if joints are within point cloud bounds
         pc_bounds = [
@@ -202,11 +268,23 @@ def print_data_statistics(samples):
 
         print(f"  Joints within point cloud bounds: {joints_in_bounds}")
 
+        # Check if arm data is within point cloud bounds
+        if arm_data:
+            arms_in_bounds = True
+            for arm_key, arm_coords in arm_data.items():
+                if len(arm_coords) > 0:
+                    for j in range(3):
+                        if arm_coords[:, j].min() < pc_bounds[j][0] or arm_coords[:, j].max() > pc_bounds[j][1]:
+                            arms_in_bounds = False
+                            break
+            print(f"  Arms within point cloud bounds: {arms_in_bounds}")
+
 
 def main():
     # Paths to training data
     train_dir = "/home/oliver/Documents/data/Mocap/train"
     labels_file = "/home/oliver/Documents/data/Mocap/train_labels.h5"
+    arm_labels_file = "/home/oliver/Documents/data/Mocap/arm_labels.h5"
 
     # Number of random samples to visualize
     num_samples = 6
@@ -214,9 +292,10 @@ def main():
     print(f"Loading {num_samples} random samples from training data...")
     print(f"Train directory: {train_dir}")
     print(f"Labels file: {labels_file}")
+    print(f"Arm labels file: {arm_labels_file}")
 
     # Load random samples
-    samples = load_training_data(train_dir, labels_file, num_samples)
+    samples = load_training_data(train_dir, labels_file, arm_labels_file, num_samples)
 
     if len(samples) == 0:
         print("No valid samples found!")

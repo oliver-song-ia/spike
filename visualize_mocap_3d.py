@@ -1,5 +1,6 @@
 """
-3D可视化处理后的Mocap点云和姿态标注
+3D visualization of processed Mocap point clouds and pose annotations
+Includes visualization of left and right arm coordinates
 """
 
 import numpy as np
@@ -12,33 +13,66 @@ import os
 import glob
 from const import skeleton_joints
 
-def load_mocap_session_data(session_path, data_format="spike"):
+def load_arm_coordinates(session_path):
     """
-    加载单个Mocap会话的数据
+    Load arm coordinates data if available
 
     Args:
-        session_path: 会话目录路径
-        data_format: 数据格式 ("spike" 或 "itop")
+        session_path: Session directory path
 
     Returns:
-        tuple: (点云列表, 关节坐标数组, 帧ID列表, 有效性标记)
+        dict: Dictionary with 'left_arm' and 'right_arm' coordinates, or None if not found
+    """
+    arm_file = os.path.join(session_path, "arm_coordinates.h5")
+
+    if not os.path.exists(arm_file):
+        return None
+
+    try:
+        with h5py.File(arm_file, 'r') as f:
+            print(f"Found arm coordinates file with keys: {list(f.keys())}")
+
+            arm_data = {}
+            for key in f.keys():
+                data = f[key][:]
+                arm_data[key] = data
+                print(f"  {key}: shape={data.shape}, dtype={data.dtype}")
+
+            return arm_data
+    except Exception as e:
+        print(f"Error loading arm coordinates: {e}")
+        return None
+
+def load_mocap_session_data(session_path, data_format="spike"):
+    """
+    Load single Mocap session data including arm coordinates
+
+    Args:
+        session_path: Session directory path
+        data_format: Data format ("spike" or "itop")
+
+    Returns:
+        tuple: (point_clouds_list, joints_coords_array, frame_ids_list, is_valid_flags, arm_data)
     """
     pointclouds_dir = os.path.join(session_path, "pointclouds")
     labels_file = os.path.join(session_path, "labels.h5")
 
     if not os.path.exists(pointclouds_dir) or not os.path.exists(labels_file):
-        raise FileNotFoundError(f"缺少必要文件: {session_path}")
+        raise FileNotFoundError(f"Missing required files: {session_path}")
 
-    # 读取标签数据
+    # Load label data
     with h5py.File(labels_file, 'r') as f:
         joints_coords = f['real_world_coordinates'][:]
         frame_ids = f['id'][:]
         is_valid = f['is_valid'][:]
 
-    print(f"标签数据: {len(joints_coords)} 帧")
-    print(f"数据格式: {data_format}")
+    print(f"Label data: {len(joints_coords)} frames")
+    print(f"Data format: {data_format}")
 
-    # 读取点云数据
+    # Load arm coordinates if available
+    arm_data = load_arm_coordinates(session_path)
+
+    # Load point cloud data
     pc_files = sorted([f for f in os.listdir(pointclouds_dir) if f.endswith('.npz')])
     point_clouds = []
 
@@ -47,44 +81,49 @@ def load_mocap_session_data(session_path, data_format="spike"):
         pc_data = np.load(pc_path)
         point_clouds.append(pc_data['arr_0'])
 
-    print(f"点云数据: {len(point_clouds)} 帧")
+    print(f"Point cloud data: {len(point_clouds)} frames")
 
-    # 显示数据统计
+    # Display data statistics
     if point_clouds:
         first_pc = point_clouds[0]
         first_joints = joints_coords[0]
 
-        print(f"数据统计:")
-        print(f"  点云: 形状={first_pc.shape}, 类型={first_pc.dtype}")
-        print(f"  关节: 形状={first_joints.shape}, 类型={first_joints.dtype}")
+        print(f"Data statistics:")
+        print(f"  Point cloud: shape={first_pc.shape}, dtype={first_pc.dtype}")
+        print(f"  Joints: shape={first_joints.shape}, dtype={first_joints.dtype}")
 
         if data_format == "itop":
-            print(f"  点云坐标范围:")
+            print(f"  Point cloud coordinate range:")
             print(f"    X: [{first_pc[:, 0].min():.1f}, {first_pc[:, 0].max():.1f}]")
             print(f"    Y: [{first_pc[:, 1].min():.1f}, {first_pc[:, 1].max():.1f}]")
             print(f"    Z: [{first_pc[:, 2].min():.1f}, {first_pc[:, 2].max():.1f}]")
         else:
-            print(f"  点云坐标范围:")
+            print(f"  Point cloud coordinate range:")
             print(f"    X: [{first_pc[:, 0].min():.3f}, {first_pc[:, 0].max():.3f}]")
             print(f"    Y: [{first_pc[:, 1].min():.3f}, {first_pc[:, 1].max():.3f}]")
             print(f"    Z: [{first_pc[:, 2].min():.3f}, {first_pc[:, 2].max():.3f}]")
 
-    return point_clouds, joints_coords, frame_ids, is_valid
+        if arm_data:
+            print(f"  Arm data available: {list(arm_data.keys())}")
 
-def visualize_single_frame(point_cloud, joints, frame_id, title="Mocap 3D Visualization"):
+    return point_clouds, joints_coords, frame_ids, is_valid, arm_data
+
+def visualize_single_frame(point_cloud, joints, frame_id, arm_data=None, frame_idx=0, title="Mocap 3D Visualization"):
     """
-    可视化单帧点云和姿态
+    Visualize single frame point cloud, pose, and arm coordinates
 
     Args:
-        point_cloud: 点云数据 (N, 3)
-        joints: 关节坐标 (15, 3)
-        frame_id: 帧ID
-        title: 图表标题
+        point_cloud: Point cloud data (N, 3)
+        joints: Joint coordinates (15, 3)
+        frame_id: Frame ID
+        arm_data: Dictionary with arm coordinate data
+        frame_idx: Frame index for arm data
+        title: Plot title
     """
-    fig = plt.figure(figsize=(14, 10))
+    fig = plt.figure(figsize=(16, 10))
     ax = fig.add_subplot(111, projection='3d')
 
-    # 显示点云（降采样以提高性能）
+    # Display point cloud (downsample for performance)
     if len(point_cloud) > 5000:
         indices = np.random.choice(len(point_cloud), 5000, replace=False)
         pc_sample = point_cloud[indices]
@@ -94,17 +133,20 @@ def visualize_single_frame(point_cloud, joints, frame_id, title="Mocap 3D Visual
     ax.scatter(pc_sample[:, 0], pc_sample[:, 1], pc_sample[:, 2],
                s=0.5, alpha=0.4, c='lightblue', depthshade=False, label='Point Cloud')
 
-    # 显示关节点
+    # Display main body joints
     ax.scatter(joints[:, 0], joints[:, 1], joints[:, 2],
-               s=80, c='red', alpha=0.8, label='Joints', edgecolors='black')
+               s=80, c='red', alpha=0.8, label='Body Joints', edgecolors='black')
 
-    # 添加关节名称标签
-    for i, (x, y, z) in enumerate(joints):
-        joint_name = skeleton_joints.joint_indices.get(i, f"Joint{i}")
-        ax.text(x, y, z, f'{i}:{joint_name}', fontsize=8, alpha=0.9,
-                bbox=dict(boxstyle="round,pad=0.2", facecolor="yellow", alpha=0.7))
+    # Add joint name labels (only for key joints to avoid clutter)
+    key_joints = [0, 1, 8, 2, 3, 6, 7]  # Head, Neck, Torso, Shoulders, Hands
+    for i in key_joints:
+        if i < len(joints):
+            joint_name = skeleton_joints.joint_indices.get(i, f"Joint{i}")
+            ax.text(joints[i, 0], joints[i, 1], joints[i, 2],
+                   f'{i}:{joint_name}', fontsize=8, alpha=0.9,
+                   bbox=dict(boxstyle="round,pad=0.2", facecolor="yellow", alpha=0.7))
 
-    # 绘制骨架连接线
+    # Draw skeleton connections
     for j1, j2, color in skeleton_joints.joint_connections:
         if j1 < len(joints) and j2 < len(joints):
             ax.plot([joints[j1, 0], joints[j2, 0]],
@@ -112,32 +154,82 @@ def visualize_single_frame(point_cloud, joints, frame_id, title="Mocap 3D Visual
                    [joints[j1, 2], joints[j2, 2]],
                    color=color, linewidth=3, alpha=0.8)
 
-    # 设置坐标轴
-    ax.set_xlabel('X (m)')
-    ax.set_ylabel('Y (m)')
-    ax.set_zlabel('Z (m)')
+    # Display arm coordinates if available
+    all_points = [pc_sample, joints]
+
+    if arm_data and frame_idx < len(list(arm_data.values())[0]):
+        print(f"Visualizing arm data for frame {frame_idx}")
+
+        for arm_name, arm_coords in arm_data.items():
+            if frame_idx < len(arm_coords):
+                current_arm = arm_coords[frame_idx]
+
+                # Determine color based on arm type
+                if 'left' in arm_name.lower():
+                    color = 'green'
+                    marker = 's'  # square
+                    label = f'Left Arm ({arm_name})'
+                elif 'right' in arm_name.lower():
+                    color = 'blue'
+                    marker = '^'  # triangle
+                    label = f'Right Arm ({arm_name})'
+                else:
+                    color = 'purple'
+                    marker = 'o'
+                    label = f'Arm ({arm_name})'
+
+                # Handle different data shapes
+                if current_arm.ndim == 2 and current_arm.shape[1] == 3:
+                    # Multiple points per arm
+                    ax.scatter(current_arm[:, 0], current_arm[:, 1], current_arm[:, 2],
+                             s=60, c=color, alpha=0.7, marker=marker,
+                             label=label, edgecolors='black')
+
+                    # Draw connections between arm points
+                    for i in range(len(current_arm) - 1):
+                        ax.plot([current_arm[i, 0], current_arm[i+1, 0]],
+                               [current_arm[i, 1], current_arm[i+1, 1]],
+                               [current_arm[i, 2], current_arm[i+1, 2]],
+                               color=color, linewidth=2, alpha=0.6)
+
+                    all_points.append(current_arm)
+
+                elif current_arm.ndim == 1 and len(current_arm) >= 3:
+                    # Single point (x, y, z)
+                    ax.scatter([current_arm[0]], [current_arm[1]], [current_arm[2]],
+                             s=100, c=color, alpha=0.8, marker=marker,
+                             label=label, edgecolors='black')
+
+                    all_points.append(current_arm[:3].reshape(1, 3))
+
+    # Set coordinate axes
+    ax.set_xlabel('X (mm)')
+    ax.set_ylabel('Y (mm)')
+    ax.set_zlabel('Z (mm)')
     ax.set_title(f'{title} - Frame {frame_id}')
     ax.legend()
 
-    # 设置等比例坐标轴
-    all_points = np.vstack([pc_sample, joints])
-    set_equal_aspect_3d(ax, all_points)
+    # Set equal aspect ratio
+    if all_points:
+        combined_points = np.vstack(all_points)
+        set_equal_aspect_3d(ax, combined_points)
 
     plt.tight_layout()
     plt.show()
 
-def create_animation(point_clouds, joints_coords, frame_ids, num_frames=50, interval=200):
+def create_animation(point_clouds, joints_coords, frame_ids, arm_data=None, num_frames=50, interval=200):
     """
-    创建动画可视化
+    Create animation visualization with arm coordinates
 
     Args:
-        point_clouds: 点云列表
-        joints_coords: 关节坐标数组 (N, 15, 3)
-        frame_ids: 帧ID列表
-        num_frames: 动画帧数
-        interval: 帧间隔(ms)
+        point_clouds: Point cloud list
+        joints_coords: Joint coordinates array (N, 15, 3)
+        frame_ids: Frame ID list
+        arm_data: Dictionary with arm coordinate data
+        num_frames: Number of animation frames
+        interval: Frame interval (ms)
     """
-    print(f"创建 {min(num_frames, len(point_clouds))} 帧动画...")
+    print(f"Creating animation with {min(num_frames, len(point_clouds))} frames...")
 
     # 计算所有数据的边界以固定坐标轴
     all_joints = joints_coords[:num_frames].reshape(-1, 3)
@@ -207,6 +299,29 @@ def create_animation(point_clouds, joints_coords, frame_ids, num_frames=50, inte
                        [current_joints[j1, 2], current_joints[j2, 2]],
                        color=color, linewidth=2, alpha=0.8)
 
+        # 绘制arm数据 (如果可用)
+        if arm_data and frame_idx < len(list(arm_data.values())[0]):
+            for arm_name, arm_coords in arm_data.items():
+                if frame_idx < len(arm_coords):
+                    current_arm = arm_coords[frame_idx]
+
+                    if 'left' in arm_name.lower():
+                        color = 'green'
+                        marker = 's'
+                    elif 'right' in arm_name.lower():
+                        color = 'blue'
+                        marker = '^'
+                    else:
+                        color = 'purple'
+                        marker = 'o'
+
+                    if current_arm.ndim == 2 and current_arm.shape[1] == 3:
+                        ax.scatter(current_arm[:, 0], current_arm[:, 1], current_arm[:, 2],
+                                 s=40, c=color, alpha=0.7, marker=marker, edgecolors='black')
+                    elif current_arm.ndim == 1 and len(current_arm) >= 3:
+                        ax.scatter([current_arm[0]], [current_arm[1]], [current_arm[2]],
+                                 s=60, c=color, alpha=0.8, marker=marker, edgecolors='black')
+
         # 设置标题
         ax.set_title(f'Mocap Animation - Frame {frame_idx+1}/{min(num_frames, len(point_clouds))} (ID: {current_id})',
                     fontsize=12)
@@ -262,7 +377,7 @@ def main():
     parser = argparse.ArgumentParser(description="3D可视化处理后的Mocap数据")
 
     parser.add_argument("--data-dir",
-                       default="/home/oliver/Documents/data/Mocap/spike_format",
+                       default="/home/oliver/Documents/data/Mocap/itop_format",
                        help="spike_format数据目录路径")
     parser.add_argument("--session", type=str,
                        help="指定会话名称或索引")
@@ -303,32 +418,34 @@ def main():
             return
 
     session_path = os.path.join(args.data_dir, session_name)
-    print(f"\n🎯 加载会话: {session_name}")
+    print(f"\nLoading session: {session_name}")
 
     try:
         # 加载数据
-        point_clouds, joints_coords, frame_ids, is_valid = load_mocap_session_data(session_path)
+        point_clouds, joints_coords, frame_ids, is_valid, arm_data = load_mocap_session_data(session_path)
 
         if args.mode == "single":
             # 单帧可视化
             if args.frame >= len(point_clouds) or args.frame >= len(joints_coords):
-                print(f"❌ 帧索引超出范围: {args.frame}")
+                print(f"Frame index out of range: {args.frame}")
                 return
 
-            print(f"可视化第 {args.frame} 帧...")
+            print(f"Visualizing frame {args.frame}...")
             visualize_single_frame(point_clouds[args.frame],
                                  joints_coords[args.frame],
                                  frame_ids[args.frame],
+                                 arm_data,
+                                 args.frame,
                                  f"Session: {session_name}")
 
         elif args.mode == "animation":
             # 动画可视化
-            print(f"创建动画可视化...")
-            anim = create_animation(point_clouds, joints_coords, frame_ids,
+            print(f"Creating animation visualization...")
+            anim = create_animation(point_clouds, joints_coords, frame_ids, arm_data,
                                   args.frames, args.interval)
 
     except Exception as e:
-        print(f"❌ 可视化失败: {e}")
+        print(f"Visualization failed: {e}")
 
 if __name__ == "__main__":
     main()

@@ -82,7 +82,7 @@ def load_data(config, mode="train"):
         tuple: A tuple containing the data loader(s) and the number of coordinate joints.
     """
     dataset_params = {
-        "root": config["dataset_path"],
+        "root": config.get("data_output_path", config["dataset_path"]),
         "frames_per_clip": config["frames_per_clip"],
         "num_points": config["num_points"],
         "use_valid_only": config["use_valid_only"],

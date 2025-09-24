@@ -41,7 +41,13 @@ def load_original_centroids(train_dir, train_labels_file):
 
     # Extract frame numbers and calculate centroids
     for identifier in tqdm(identifiers, desc="Computing original centroids"):
-        frame_id_str = identifier.decode('utf-8')
+        # Handle both string and numeric identifiers
+        if isinstance(identifier, (bytes, np.bytes_)):
+            frame_id_str = identifier.decode('utf-8')
+        elif isinstance(identifier, (int, np.integer)):
+            frame_id_str = f"00_{identifier:05d}"
+        else:
+            frame_id_str = str(identifier)
         frame_num = int(frame_id_str.split('_')[-1])  # Extract frame number from "XX_YYYYY"
         frame_ids.append(frame_num)
 
@@ -261,7 +267,13 @@ def create_trajectory_csv(predictions, video_ids, session_map, arm_labels_file, 
         # Create mapping from frame_id to arm data
         arm_mapping = {}
         for i, identifier in enumerate(arm_identifiers):
-            frame_id = identifier.decode('utf-8')
+            # Handle both string and numeric identifiers
+            if isinstance(identifier, (bytes, np.bytes_)):
+                frame_id = identifier.decode('utf-8')
+            elif isinstance(identifier, (int, np.integer)):
+                frame_id = f"00_{identifier:05d}"
+            else:
+                frame_id = str(identifier)
             frame_arm_data = {}
 
             if 'left_arm_coords' in arm_data and i < len(arm_data['left_arm_coords']):
@@ -371,8 +383,14 @@ def create_trajectory_csv(predictions, video_ids, session_map, arm_labels_file, 
 
         csv_data.append(row)
 
-    # Create DataFrame and save to CSV
+    # Create DataFrame and clean invalid characters
     df = pd.DataFrame(csv_data)
+
+    # Clean any invalid characters that might cause issues
+    for col in df.columns:
+        if df[col].dtype == 'object':
+            df[col] = df[col].astype(str).replace({r'[^\x20-\x7E]': ''}, regex=True)
+
     df.to_csv(output_csv_file, index=False, float_format='%.2f')
 
     print(f"CSV file saved to: {output_csv_file}")
@@ -425,7 +443,13 @@ def create_trajectory_csv_gt(ground_truths, video_ids, session_map, arm_labels_f
         # Create mapping from frame_id to arm data
         arm_mapping = {}
         for i, identifier in enumerate(arm_identifiers):
-            frame_id = identifier.decode('utf-8')
+            # Handle both string and numeric identifiers
+            if isinstance(identifier, (bytes, np.bytes_)):
+                frame_id = identifier.decode('utf-8')
+            elif isinstance(identifier, (int, np.integer)):
+                frame_id = f"00_{identifier:05d}"
+            else:
+                frame_id = str(identifier)
             frame_arm_data = {}
 
             if 'left_arm_coords' in arm_data and i < len(arm_data['left_arm_coords']):
@@ -535,8 +559,14 @@ def create_trajectory_csv_gt(ground_truths, video_ids, session_map, arm_labels_f
 
         csv_data.append(row)
 
-    # Create DataFrame and save to CSV
+    # Create DataFrame and clean invalid characters
     df = pd.DataFrame(csv_data)
+
+    # Clean any invalid characters that might cause issues
+    for col in df.columns:
+        if df[col].dtype == 'object':
+            df[col] = df[col].astype(str).replace({r'[^\x20-\x7E]': ''}, regex=True)
+
     df.to_csv(output_csv_file, index=False, float_format='%.2f')
 
     print(f"Ground truth CSV file saved to: {output_csv_file}")
@@ -637,11 +667,11 @@ def analyze_predictions(predictions, ground_truths):
     print(f"Overall mean error: {errors.mean():.2f} mm")
     print(f"Overall std error: {errors.std():.2f} mm")
 
-    print(f"\nPer-joint errors (mean � std):")
+    print(f"\nPer-joint errors (mean | std):")
     from const import skeleton_joints
     for i in range(15):
         joint_name = skeleton_joints.joint_indices.get(i, f"Joint{i}")
-        print(f"  {i:2d} {joint_name:12s}: {mean_errors[i]:6.2f} � {std_errors[i]:6.2f} mm")
+        print(f"  {i:2d} {joint_name:12s}: {mean_errors[i]:6.2f} | {std_errors[i]:6.2f} mm")
 
 
 def main(arguments):
@@ -668,8 +698,9 @@ def main(arguments):
     print(f"Model loaded successfully")
 
     # Load original centroids for world coordinate conversion
-    train_dir = "/home/oliver/Documents/data/Mocap/train"
-    train_labels_file = "/home/oliver/Documents/data/Mocap/train_labels.h5"
+    data_output_path = config.get('data_output_path', config.get('experiments_path', '.'))
+    train_dir = os.path.join(data_output_path, 'train')
+    train_labels_file = os.path.join(data_output_path, 'train_labels.h5')
     centroids_dict = load_original_centroids(train_dir, train_labels_file)
 
     # Generate predictions (convert to world coordinates)
@@ -684,8 +715,8 @@ def main(arguments):
     save_predictions_h5(predictions, ground_truths, video_ids, output_file)
 
     # Load session information and create CSV files
-    itop_format_dir = "/home/oliver/Documents/data/Mocap/itop_format"
-    arm_labels_file = "/home/oliver/Documents/data/Mocap/arm_labels.h5"
+    itop_format_dir = config.get('dataset_path', '')  # Points to itop_format directory
+    arm_labels_file = os.path.join(data_output_path, 'arm_labels.h5')
     csv_output_file = output_file.replace('.h5', '_trajectory.csv')
     csv_gt_output_file = output_file.replace('.h5', '_trajectory_gt.csv')
 
@@ -715,10 +746,14 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Generate predicted poses using trained SPiKE model")
     parser.add_argument("--config", type=str, default="experiments/Custom/1",
                         help="Path to the YAML config directory or file")
-    parser.add_argument("--model", type=str, default="experiments/Custom/1/log/best_model.pth",
-                        help="Path to the model checkpoint")
-    parser.add_argument("--output", type=str, default="experiments/Custom/1/log/inference_labels.h5",
-                        help="Output H5 file path for predictions")
 
     args = parser.parse_args()
+
+    # Load config and set all paths from config
+    config = load_config(args.config)
+
+    # Set paths from config
+    args.model = os.path.join(config.get("output_dir", "."), "best_model.pth")
+    args.output = os.path.join(config.get("output_dir", "."), "inference_labels.h5")
+
     main(args)

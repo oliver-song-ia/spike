@@ -5,9 +5,14 @@ No intermediate files, direct memory-based conversion
 """
 
 import os
+import sys
 import numpy as np
 import h5py
 from tqdm import tqdm
+
+# Add project root to path for config utils
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+from utils.config_utils import load_config
 
 
 def rotate_x_minus_90(points):
@@ -111,7 +116,7 @@ def load_session_data(session_path):
     return point_clouds, rotated_joints, frame_ids, is_valid, arm_data
 
 
-def convert_itop_to_training(itop_dir, output_train_dir, output_labels_file):
+def convert_itop_to_training(itop_dir, output_train_dir, output_labels_file, arm_labels_file):
     """
     Convert ITOP format data directly to training format in memory
 
@@ -119,6 +124,7 @@ def convert_itop_to_training(itop_dir, output_train_dir, output_labels_file):
         itop_dir: Input ITOP format directory
         output_train_dir: Output training directory for .npz files
         output_labels_file: Output labels .h5 file (joint data only, consistent with original format)
+        arm_labels_file: Output arm labels .h5 file for robot planning
     """
     print("=== Converting ITOP format to training format ===")
 
@@ -140,7 +146,7 @@ def convert_itop_to_training(itop_dir, output_train_dir, output_labels_file):
     all_joints = []
     all_frame_ids = []
     all_is_valid = []
-    arm_data_found = False
+    all_arm_data = {}  # Dictionary to store concatenated arm data
 
     frame_counter = 0
 
@@ -167,9 +173,30 @@ def convert_itop_to_training(itop_dir, output_train_dir, output_labels_file):
 
             all_is_valid.extend(is_valid)
 
-            # Check if arm data exists
-            if arm_data and ('left_arm_coords' in arm_data or 'right_arm_coords' in arm_data):
-                arm_data_found = True
+            # Collect arm data following the reference pattern
+            if arm_data:
+                for arm_key, arm_coords in arm_data.items():
+                    if arm_key == 'id':
+                        continue  # Skip ID, we'll generate our own
+
+                    if arm_key not in all_arm_data:
+                        all_arm_data[arm_key] = []
+
+                    # Ensure arm data matches the number of frames
+                    if len(arm_coords) == len(joints_coords):
+                        all_arm_data[arm_key].extend(arm_coords)
+                    else:
+                        print(f"    Warning: arm data {arm_key} length mismatch: {len(arm_coords)} vs {len(joints_coords)}")
+                        # Pad or truncate to match
+                        if len(arm_coords) < len(joints_coords):
+                            # Pad with zeros
+                            padding_shape = list(arm_coords[0].shape) if len(arm_coords) > 0 else [2, 3]
+                            padding = np.zeros((len(joints_coords) - len(arm_coords), *padding_shape))
+                            padded_coords = np.concatenate([arm_coords, padding], axis=0)
+                            all_arm_data[arm_key].extend(padded_coords)
+                        else:
+                            # Truncate
+                            all_arm_data[arm_key].extend(arm_coords[:len(joints_coords)])
 
         except Exception as e:
             print(f"Error processing session {session_dir}: {e}")
@@ -185,6 +212,33 @@ def convert_itop_to_training(itop_dir, output_train_dir, output_labels_file):
 
     print(f"Labels saved to: {output_labels_file}")
 
+    # Save arm data separately if available (following reference pattern)
+    if all_arm_data:
+        print("\nSaving arm coordinates to separate file...")
+        with h5py.File(arm_labels_file, 'w') as f:
+            # Use same ID format for consistency
+            f.create_dataset('id', data=np.array(all_frame_ids, dtype='S'))
+
+            # Save each arm dataset, avoiding conflicts with reserved names
+            reserved_names = {'id', 'is_valid', 'real_world_coordinates'}
+            for arm_key, arm_coords in all_arm_data.items():
+                if len(arm_coords) == len(all_frame_ids):
+                    # Check for name conflicts and rename if necessary
+                    dataset_name = arm_key
+                    if dataset_name in reserved_names:
+                        dataset_name = f"arm_{arm_key}"
+                        print(f"  Warning: Renamed {arm_key} to {dataset_name} to avoid conflict")
+
+                    arm_array = np.array(arm_coords)
+                    f.create_dataset(dataset_name, data=arm_array)
+                    print(f"  {dataset_name}: shape={arm_array.shape}, dtype={arm_array.dtype}")
+                else:
+                    print(f"  Warning: Skipping {arm_key} due to length mismatch: {len(arm_coords)} vs {len(all_frame_ids)}")
+
+        print(f"Arm labels saved to: {arm_labels_file}")
+    else:
+        print("No arm data found in any session - no arm file created")
+
     # Print summary
     datasets_info = [
         f"  - real_world_coordinates: {len(all_joints)} frames × 15 joints × 3 coords",
@@ -192,14 +246,18 @@ def convert_itop_to_training(itop_dir, output_train_dir, output_labels_file):
         f"  - is_valid: {len(all_is_valid)} validity flags"
     ]
 
-    print("Datasets saved:")
+    print("Joint datasets saved:")
     for info in datasets_info:
         print(info)
 
-    if arm_data_found:
-        print("Note: Arm coordinate data found but not saved (use separate arm processing if needed)")
+    if all_arm_data:
+        print("Arm datasets saved:")
+        for arm_key in all_arm_data.keys():
+            if len(all_arm_data[arm_key]) == len(all_frame_ids):
+                arm_array = np.array(all_arm_data[arm_key])
+                print(f"  - {arm_key}: {arm_array.shape}")
     else:
-        print("Note: No arm coordinate data found in sessions")
+        print("No arm datasets created")
 
     print(f"Training point clouds saved to: {output_train_dir} ({frame_counter} files)")
 
@@ -211,40 +269,58 @@ def main():
     import argparse
 
     parser = argparse.ArgumentParser(description="Convert ITOP format directly to training format")
-    parser.add_argument('--itop-dir', type=str, required=True,
-                       help='Input ITOP format directory')
-    parser.add_argument('--train-dir', type=str, required=True,
-                       help='Output training directory for .npz files')
-    parser.add_argument('--labels-file', type=str,
-                       help='Output labels file path (default: train_labels.h5 in parent of train-dir)')
+    parser.add_argument('--config', type=str, default='experiments/Custom/1',
+                       help='Config file path')
 
     args = parser.parse_args()
 
-    # Set up output paths
-    output_train_dir = args.train_dir
-
-    if args.labels_file:
-        output_labels_file = args.labels_file
-    else:
-        # Default: put labels file in parent directory of train dir
-        parent_dir = os.path.dirname(args.train_dir)
-        output_labels_file = os.path.join(parent_dir, 'train_labels.h5')
-
-    # Validate input directory
-    if not os.path.exists(args.itop_dir):
-        print(f"Error: Input directory does not exist: {args.itop_dir}")
+    # Load config
+    try:
+        config = load_config(args.config)
+        print(f"Loaded config from: {args.config}")
+    except Exception as e:
+        print(f"Error loading config: {e}")
         return 1
 
+    # Get paths from config
+    itop_dir = config.get('dataset_path')
+    data_output_path = config.get('data_output_path')
+
+    # Set up output paths
+    train_dir = os.path.join(data_output_path, 'train')
+    labels_file = os.path.join(data_output_path, 'train_labels.h5')
+    arm_labels_file = os.path.join(data_output_path, 'arm_labels.h5')
+
+    # Validate paths from config
+    if not itop_dir:
+        print("Error: 'dataset_path' not specified in config file")
+        return 1
+    if not data_output_path:
+        print("Error: 'data_output_path' not specified in config file")
+        return 1
+
+    # Validate input directory
+    if not os.path.exists(itop_dir):
+        print(f"Error: Input directory does not exist: {itop_dir}")
+        print(f"Check 'dataset_path' in config file: {args.config}")
+        return 1
+
+    print(f"Input ITOP directory: {itop_dir}")
+    print(f"Output training directory: {train_dir}")
+    print(f"Output labels file: {labels_file}")
+    print(f"Output arm labels file: {arm_labels_file}")
+
     # Create output directories
-    os.makedirs(output_train_dir, exist_ok=True)
-    os.makedirs(os.path.dirname(output_labels_file), exist_ok=True)
+    os.makedirs(train_dir, exist_ok=True)
+    os.makedirs(os.path.dirname(labels_file), exist_ok=True)
 
     try:
         # Run conversion
         total_frames = convert_itop_to_training(
-            args.itop_dir,
-            output_train_dir,
-            output_labels_file
+            itop_dir,
+            train_dir,
+            labels_file,
+            arm_labels_file
         )
 
         print(f"\n=== Conversion Complete ===")

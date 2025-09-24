@@ -6,7 +6,7 @@ from model import spike
 
 def create_model(config, num_coord_joints):
     """Create a model based on the config and return it."""
-    if "ITOP" in config["dataset"]:
+    if "ITOP" in config["dataset"] or config["dataset"] == "CUSTOM":
         try:
             model_name = config.get("model")
             if not hasattr(spike, model_name):

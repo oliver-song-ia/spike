@@ -122,11 +122,11 @@ def main(arguments):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="SPiKE Training on ITOP dataset")
+    parser = argparse.ArgumentParser(description="SPiKE Training on custom dataset")
     parser.add_argument(
         "--config",
         type=str,
-        default="ITOP-SIDE/1",
+        default="experiments/Custom/1",
         help="Path to the YAML config file",
     )
     args = parser.parse_args()

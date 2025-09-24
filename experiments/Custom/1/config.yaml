@@ -1,5 +1,5 @@
 # Configurations for upper body only training
-dataset: 'ITOP-SIDE'
+dataset: 'CUSTOM'
 device_args: 0
 seed: 0
 model: 'SPiKE'
@@ -7,6 +7,10 @@ wandb_project: 'hpe'
 mode_train: false
 mode_val: true
 use_valid_only: true
+
+# Data paths
+experiments_path: '/home/oliver/Documents/SPiKE/'
+dataset_path: '/home/oliver/Documents/data/Mocap'
 
 
 # input

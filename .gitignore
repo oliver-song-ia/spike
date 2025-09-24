@@ -64,6 +64,7 @@ Thumbs.db
 # Weights & Biases
 wandb/
 
+.claude/
 # Data directories (optional - uncomment if needed)
 # data/
 # *.npz

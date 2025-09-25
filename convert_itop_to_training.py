@@ -15,188 +15,125 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from utils.config_utils import load_config
 
 
-def rotate_x_minus_90(points):
-    """
-    Rotate points by -90 degrees around X-axis
+# ----------------------------- Utils -----------------------------
+_ROT_X_M90 = np.array([[1, 0, 0],
+                       [0, 0, 1],
+                       [0,-1, 0]], dtype=np.float32)
 
-    Rotation matrix for -90 degrees around X-axis:
-    [1  0  0]
-    [0  0  1]
-    [0 -1  0]
-
-    Args:
-        points: numpy array of shape (N, 3) or (15, 3)
-
-    Returns:
-        rotated_points: numpy array of same shape
-    """
-    rotation_matrix = np.array([
-        [1,  0,  0],
-        [0,  0,  1],
-        [0, -1,  0]
-    ], dtype=np.float32)
-
-    return np.dot(points, rotation_matrix.T)
+def rotate_x_minus_90(points: np.ndarray) -> np.ndarray:
+    """Rotate by -90° around X-axis; supports (N,3) / (15,3) / batched."""
+    pts = np.asarray(points)
+    if pts.ndim == 2 and pts.shape[-1] == 3:
+        return pts @ _ROT_X_M90.T
+    # vectorized for (..., 3)
+    flat = pts.reshape(-1, 3) @ _ROT_X_M90.T
+    return flat.reshape(pts.shape)
 
 
+def _ensure_bytes_id(s: str) -> bytes:
+    return s.encode("utf-8")
+
+
+def _gen_new_ids(start_frame: int, count: int):
+    """Generate bytes IDs: 00_XXXXX for frames [start_frame-count, start_frame)."""
+    base = start_frame - count
+    return [_ensure_bytes_id(f"00_{base + i:05d}") for i in range(count)]
+
+
+# ----------------------------- Core -----------------------------
 def load_session_data(session_path):
     """
     Load all data from a single ITOP session
-
-    Args:
-        session_path: Path to session directory
 
     Returns:
         tuple: (point_clouds, joints_coords, frame_ids, is_valid, arm_data)
     """
     pointclouds_dir = os.path.join(session_path, "pointclouds")
-    labels_file = os.path.join(session_path, "labels.h5")
-    arm_file = os.path.join(session_path, "arm_coordinates.h5")
+    labels_file     = os.path.join(session_path, "labels.h5")
+    arm_file        = os.path.join(session_path, "arm_coordinates.h5")
 
-    if not os.path.exists(pointclouds_dir) or not os.path.exists(labels_file):
+    if not os.path.exists(pointclouds_dir) or not os.path.exists(labels_file) or not os.path.exists(arm_file):
         raise FileNotFoundError(f"Missing required files in session: {session_path}")
 
-    # Load labels
+    # labels
     with h5py.File(labels_file, 'r') as f:
         joints_coords = f['real_world_coordinates'][:]
-        frame_ids = f['id'][:]
-        is_valid = f['is_valid'][:]
+        frame_ids     = f['id'][:]
+        is_valid      = f['is_valid'][:]
 
-    # Load point clouds
+    # point clouds (take first len(joints) files, aligned)
     pc_files = sorted([f for f in os.listdir(pointclouds_dir) if f.endswith('.npz')])
-    point_clouds = []
+    pcs = []
+    for pc_file in pc_files[:len(joints_coords)]:
+        pc = np.load(os.path.join(pointclouds_dir, pc_file))['arr_0']
+        pcs.append(rotate_x_minus_90(pc))
 
-    for i, pc_file in enumerate(pc_files[:len(joints_coords)]):
-        pc_path = os.path.join(pointclouds_dir, pc_file)
-        pc_data = np.load(pc_path)
-        point_cloud = pc_data['arr_0']  # Shape: (N, 3)
+    # joints
+    rotated_joints = rotate_x_minus_90(joints_coords)
 
-        # Apply rotation transformation
-        rotated_pc = rotate_x_minus_90(point_cloud)
-        point_clouds.append(rotated_pc)
+    # arm (assumed to exist)
+    arm_info = {}
+    with h5py.File(arm_file, 'r') as f:
+        left  = f['left_arm_coords'][:]
+        right = f['right_arm_coords'][:]
+        arm_info['left_arm_coords']  = rotate_x_minus_90(left)
+        arm_info['right_arm_coords'] = rotate_x_minus_90(right)
+        arm_info['id'] = f['id'][:]
 
-    # Apply rotation to joint coordinates
-    rotated_joints = []
-    for joints in joints_coords:
-        rotated_joints.append(rotate_x_minus_90(joints))
-    rotated_joints = np.array(rotated_joints)
-
-    # Load arm coordinates if available
-    arm_data = None
-    if os.path.exists(arm_file):
-        try:
-            arm_info = {}
-            with h5py.File(arm_file, 'r') as f:
-                if 'left_arm_coords' in f:
-                    left_coords = f['left_arm_coords'][:]
-                    # Apply rotation to arm coordinates
-                    rotated_left = []
-                    for coords in left_coords:
-                        rotated_left.append(rotate_x_minus_90(coords))
-                    arm_info['left_arm_coords'] = np.array(rotated_left)
-
-                if 'right_arm_coords' in f:
-                    right_coords = f['right_arm_coords'][:]
-                    # Apply rotation to arm coordinates
-                    rotated_right = []
-                    for coords in right_coords:
-                        rotated_right.append(rotate_x_minus_90(coords))
-                    arm_info['right_arm_coords'] = np.array(rotated_right)
-
-                if 'id' in f:
-                    arm_info['id'] = f['id'][:]
-
-            if arm_info:
-                arm_data = arm_info
-
-        except Exception as e:
-            print(f"Warning: Could not load arm coordinates from {arm_file}: {e}")
-
-    print(f"Loaded session {os.path.basename(session_path)}: {len(point_clouds)} frames")
-    return point_clouds, rotated_joints, frame_ids, is_valid, arm_data
+    print(f"Loaded session {os.path.basename(session_path)}: {len(pcs)} frames")
+    return pcs, rotated_joints, frame_ids, is_valid, arm_info
 
 
 def convert_itop_to_training(itop_dir, output_train_dir, output_labels_file, arm_labels_file):
     """
     Convert ITOP format data directly to training format in memory
-
-    Args:
-        itop_dir: Input ITOP format directory
-        output_train_dir: Output training directory for .npz files
-        output_labels_file: Output labels .h5 file (joint data only, consistent with original format)
-        arm_labels_file: Output arm labels .h5 file for robot planning
     """
     print("=== Converting ITOP format to training format ===")
 
-    # Get all session directories
-    session_dirs = [d for d in os.listdir(itop_dir)
-                   if os.path.isdir(os.path.join(itop_dir, d))]
-    session_dirs.sort()
-
+    session_dirs = sorted([d for d in os.listdir(itop_dir)
+                           if os.path.isdir(os.path.join(itop_dir, d))])
     print(f"Found {len(session_dirs)} sessions to process")
     print(f"Input directory: {itop_dir}")
     print(f"Output train directory: {output_train_dir}")
     print(f"Output labels file: {output_labels_file}")
 
-    # Create output directories
     os.makedirs(output_train_dir, exist_ok=True)
     os.makedirs(os.path.dirname(output_labels_file), exist_ok=True)
 
-    # Collect all data
-    all_joints = []
-    all_frame_ids = []
-    all_is_valid = []
-    all_arm_data = {}  # Dictionary to store concatenated arm data
-
+    all_joints, all_frame_ids, all_is_valid = [], [], []
+    all_arm_data = {'left_arm_coords': [], 'right_arm_coords': []}
     frame_counter = 0
 
-    # Process each session
     for session_dir in tqdm(session_dirs, desc="Processing sessions"):
         session_path = os.path.join(itop_dir, session_dir)
-
         try:
-            point_clouds, joints_coords, frame_ids, is_valid, arm_data = load_session_data(session_path)
+            pcs, joints_coords, frame_ids, is_valid, arm_data = load_session_data(session_path)
 
-            # Save point clouds as numbered .npz files
-            for pc in point_clouds:
-                pc_file = os.path.join(output_train_dir, f"{frame_counter}.npz")
-                np.savez_compressed(pc_file, pc)
+            # save pcs
+            for pc in pcs:
+                np.savez_compressed(os.path.join(output_train_dir, f"{frame_counter}.npz"), pc)
                 frame_counter += 1
 
-            # Collect label data
+            # collect joints/ids/valid
             all_joints.extend(joints_coords)
-
-            # Generate new frame IDs in format "00_XXXXX"
-            for i in range(len(joints_coords)):
-                new_frame_id = f"00_{frame_counter - len(joints_coords) + i:05d}"
-                all_frame_ids.append(new_frame_id.encode('utf-8'))
-
+            new_ids = _gen_new_ids(frame_counter, len(joints_coords))
+            all_frame_ids.extend(new_ids)
             all_is_valid.extend(is_valid)
 
-            # Collect arm data following the reference pattern
-            if arm_data:
-                for arm_key, arm_coords in arm_data.items():
-                    if arm_key == 'id':
-                        continue  # Skip ID, we'll generate our own
-
-                    if arm_key not in all_arm_data:
-                        all_arm_data[arm_key] = []
-
-                    # Ensure arm data matches the number of frames
-                    if len(arm_coords) == len(joints_coords):
-                        all_arm_data[arm_key].extend(arm_coords)
-                    else:
-                        print(f"    Warning: arm data {arm_key} length mismatch: {len(arm_coords)} vs {len(joints_coords)}")
-                        # Pad or truncate to match
-                        if len(arm_coords) < len(joints_coords):
-                            # Pad with zeros
-                            padding_shape = list(arm_coords[0].shape) if len(arm_coords) > 0 else [2, 3]
-                            padding = np.zeros((len(joints_coords) - len(arm_coords), *padding_shape))
-                            padded_coords = np.concatenate([arm_coords, padding], axis=0)
-                            all_arm_data[arm_key].extend(padded_coords)
-                        else:
-                            # Truncate
-                            all_arm_data[arm_key].extend(arm_coords[:len(joints_coords)])
+            # arm collect with pad/truncate to match joints length
+            for arm_key in ('left_arm_coords', 'right_arm_coords'):
+                arr = arm_data[arm_key]
+                if len(arr) == len(joints_coords):
+                    all_arm_data[arm_key].extend(arr)
+                elif len(arr) < len(joints_coords):
+                    pad_shape = arr[0].shape if len(arr) > 0 else (2, 3)
+                    missing = len(joints_coords) - len(arr)
+                    pad = np.zeros((missing, *pad_shape), dtype=arr.dtype if len(arr) > 0 else np.float32)
+                    all_arm_data[arm_key].extend(np.concatenate([arr, pad], axis=0))
+                    print(f"    Warning: arm data {arm_key} length mismatch: {len(arr)} vs {len(joints_coords)} (padded)")
+                else:
+                    all_arm_data[arm_key].extend(arr[:len(joints_coords)])
+                    print(f"    Warning: arm data {arm_key} length mismatch: {len(arr)} vs {len(joints_coords)} (truncated)")
 
         except Exception as e:
             print(f"Error processing session {session_dir}: {e}")
@@ -204,63 +141,41 @@ def convert_itop_to_training(itop_dir, output_train_dir, output_labels_file, arm
 
     print(f"Processed {len(all_joints)} total frames")
 
-    # Save labels file (only joint data, consistent with original format)
+    # save joint labels
     with h5py.File(output_labels_file, 'w') as f:
         f.create_dataset('real_world_coordinates', data=np.array(all_joints))
-        f.create_dataset('id', data=all_frame_ids)
+        f.create_dataset('id', data=all_frame_ids)  # bytes array
         f.create_dataset('is_valid', data=np.array(all_is_valid))
-
     print(f"Labels saved to: {output_labels_file}")
 
-    # Save arm data separately if available (following reference pattern)
-    if all_arm_data:
-        print("\nSaving arm coordinates to separate file...")
-        with h5py.File(arm_labels_file, 'w') as f:
-            # Use same ID format for consistency
-            f.create_dataset('id', data=np.array(all_frame_ids, dtype='S'))
+    # save arm labels (always present by assumption)
+    print("\nSaving arm coordinates to separate file...")
+    with h5py.File(arm_labels_file, 'w') as f:
+        f.create_dataset('id', data=np.array(all_frame_ids, dtype='S'))
+        reserved = {'id', 'is_valid', 'real_world_coordinates'}
+        for k, seq in all_arm_data.items():
+            name = k if k not in reserved else f"arm_{k}"
+            arr = np.array(seq)
+            f.create_dataset(name, data=arr)
+            print(f"  {name}: shape={arr.shape}, dtype={arr.dtype}")
+    print(f"Arm labels saved to: {arm_labels_file}")
 
-            # Save each arm dataset, avoiding conflicts with reserved names
-            reserved_names = {'id', 'is_valid', 'real_world_coordinates'}
-            for arm_key, arm_coords in all_arm_data.items():
-                if len(arm_coords) == len(all_frame_ids):
-                    # Check for name conflicts and rename if necessary
-                    dataset_name = arm_key
-                    if dataset_name in reserved_names:
-                        dataset_name = f"arm_{arm_key}"
-                        print(f"  Warning: Renamed {arm_key} to {dataset_name} to avoid conflict")
-
-                    arm_array = np.array(arm_coords)
-                    f.create_dataset(dataset_name, data=arm_array)
-                    print(f"  {dataset_name}: shape={arm_array.shape}, dtype={arm_array.dtype}")
-                else:
-                    print(f"  Warning: Skipping {arm_key} due to length mismatch: {len(arm_coords)} vs {len(all_frame_ids)}")
-
-        print(f"Arm labels saved to: {arm_labels_file}")
-    else:
-        print("No arm data found in any session - no arm file created")
-
-    # Print summary
+    # summary prints (kept identical in spirit)
     datasets_info = [
         f"  - real_world_coordinates: {len(all_joints)} frames × 15 joints × 3 coords",
         f"  - id: {len(all_frame_ids)} frame IDs",
         f"  - is_valid: {len(all_is_valid)} validity flags"
     ]
-
     print("Joint datasets saved:")
     for info in datasets_info:
         print(info)
 
-    if all_arm_data:
-        print("Arm datasets saved:")
-        for arm_key in all_arm_data.keys():
-            if len(all_arm_data[arm_key]) == len(all_frame_ids):
-                arm_array = np.array(all_arm_data[arm_key])
-                print(f"  - {arm_key}: {arm_array.shape}")
-    else:
-        print("No arm datasets created")
+    print("Arm datasets saved:")
+    for k in all_arm_data.keys():
+        arr = np.array(all_arm_data[k])
+        print(f"  - {k}: {arr.shape}")
 
     print(f"Training point clouds saved to: {output_train_dir} ({frame_counter} files)")
-
     return len(all_joints)
 
 
@@ -270,7 +185,7 @@ def main():
 
     parser = argparse.ArgumentParser(description="Convert ITOP format directly to training format")
     parser.add_argument('--config', type=str, default='experiments/Custom/1',
-                       help='Config file path')
+                        help='Config file path')
 
     args = parser.parse_args()
 
@@ -315,7 +230,6 @@ def main():
     os.makedirs(os.path.dirname(labels_file), exist_ok=True)
 
     try:
-        # Run conversion
         total_frames = convert_itop_to_training(
             itop_dir,
             train_dir,

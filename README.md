@@ -45,12 +45,13 @@ Key files for robot planning pipeline:
 
 ```
 SPiKE/
-├── convert_itop_to_training.py     # Independent data conversion script
+├── convert_itop_to_training.py     # Config-based data conversion script
 ├── pose_detector.py                # ROS2 real-time pose detection node
-├── generate_predicted_pose.py      # Trajectory generation for robot planning
+├── generate_predicted_pose.py      # Config-based trajectory generation for robot planning
+├── compare_inference_results.py    # Compare inference results between experiments
 ├── train_itop.py                   # Model training script
 ├── experiments/Custom/1/
-│   └── config.yaml                 # Custom dataset configuration
+│   └── config.yaml                 # Custom dataset configuration with paths
 ├── model/
 │   ├── model_builder.py            # Model creation with CUSTOM dataset support
 │   └── spike.py                    # SPiKE transformer architecture
@@ -81,22 +82,22 @@ SPiKE/
 
 ### For Custom Dataset (Robot Planning Pipeline)
 
-1. **Data Conversion**: Convert your cleaned ITOP-format data to training format using the independent conversion script:
+1. **Data Conversion**: Convert your cleaned ITOP-format data to training format using the config-based conversion script:
    ```bash
-   python convert_itop_to_training.py --itop-dir /path/to/itop/format/data --train-dir /path/to/training/data --labels-file /path/to/train_labels.h5
+   python convert_itop_to_training.py --config experiments/Custom/1
    ```
-   This script directly converts ITOP format data to training format without intermediate files, including arm labels for robot planner usage.
+   This script reads all paths from the config file and directly converts ITOP format data to training format, including arm labels for robot planner usage. The input data should be located in session subfolders within the configured `dataset_path`.
 
-2. **Model Training**: Configure the dataset paths in your config file (`experiments/Custom/1/config.yaml`) and train the pose detection model:
+2. **Model Training**: Train the pose detection model using the configured paths:
    ```bash
    python train_itop.py --config experiments/Custom/1
    ```
 
-3. **Inference and Trajectory Generation**: Use the trained model to predict human poses on the entire dataset and generate trajectory CSV files for robot planning:
+3. **Inference and Trajectory Generation**: Use the trained model to predict human poses and generate trajectory CSV files for robot planning:
    ```bash
-   python generate_predicted_pose.py
+   python generate_predicted_pose.py --config experiments/Custom/1
    ```
-   This generates both predicted pose trajectories and ground truth trajectories for robot planner usage.
+   This generates both predicted pose trajectories (`inference_trajectory.csv`) and ground truth trajectories (`inference_trajectory_gt.csv`) with all 15 joint coordinates plus arm coordinates for robot planner usage.
 
 4. **Real-time ROS2 Integration**: Run the pose detector node for real-time pose detection from point cloud streams:
    ```bash
@@ -127,7 +128,7 @@ python predict_itop.py --config experiments/ITOP-SIDE/1/config.yaml --model expe
 For trajectory generation and robot planning applications:
 
 ```bash
-python generate_predicted_pose.py
+python generate_predicted_pose.py --config experiments/Custom/1
 ```
 
 You can download our model weights here: [Download Model Weights.](https://cloud.cvl.tuwien.ac.at/s/ATCBp34rH3fGJ23)

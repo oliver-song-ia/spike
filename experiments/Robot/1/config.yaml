@@ -1,0 +1,106 @@
+# Configuration for robot trajectory prediction
+dataset: 'ROBOT'
+device_args: 0
+seed: 0
+model: 'SPiKE_ROBOT'
+wandb_project: 'robot_trajectory'
+mode_train: false
+mode_val: true
+use_valid_only: true
+
+# Data paths
+experiments_path: '/home/oliver/Documents/SPiKE/'
+dataset_path: '/home/oliver/Documents/data/Mocap/itop_format'
+data_output_path: '/home/oliver/Documents/data/Mocap'
+
+# Robot trajectory specific
+output_dir: '/home/oliver/Documents/SPiKE/experiments/Robot/1/log'
+
+# input
+frames_per_clip: 3
+frame_interval: 1
+num_points: 4096
+target_frame: 'last'
+
+# threshold (in mm - for robot trajectory accuracy evaluation)
+threshold: 150.0
+
+# point spatial convolution
+radius: 0.2
+nsamples: 32
+spatial_stride: 32
+
+# transformer
+dim: 1024
+depth: 5
+heads: 8
+dim_head: 256
+mlp_dim: 2048
+dropout1: 0.0
+dropout2: 0.0
+
+# training
+batch_size: 24
+epochs: 50
+workers: 8
+lr: 0.001  # Reduced learning rate for stability
+momentum: 0.9
+weight_decay: 1e-4
+lr_milestones:
+  - 20
+  - 30
+lr_gamma: 0.1
+lr_warmup_epochs: 0
+
+# output
+log_dir: "log"
+
+# resume
+resume: ''
+start_epoch: 0
+
+# losses - use MSE for robot trajectory prediction
+loss_type: 'mse'
+
+# Robot trajectory point weights
+# All robot points have equal importance
+robot_point_weights:
+  "Left_L1": 1.0
+  "Left_L2": 1.0
+  "Right_R1": 1.0
+  "Right_R2": 1.0
+
+save: True
+
+PREPROCESS_AUGMENT_TRAIN:
+  - name: CenterAug
+    p_prob: 1.0
+    p_axes:
+      - true
+      - true
+      - true
+    apply_on_gt: true
+
+  - name: RotationAug
+    p_prob: 0.5
+    p_axis: 1
+    p_min_angle: -1.57
+    p_max_angle: 1.57
+    apply_on_gt: true
+
+  - name: MirrorAug
+    p_prob: 0.5
+    p_axes:
+      - true
+      - false
+      - false
+    apply_on_gt: true
+
+PREPROCESS_TEST:
+  - name: CenterAug
+    p_prob: 1.0
+    p_axes:
+      - true
+      - true
+      - true
+    apply_on_gt: true

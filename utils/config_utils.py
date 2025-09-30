@@ -28,7 +28,7 @@ def convert_to_float(config, keys):
 def set_dataset_paths(config):
     """Set the dataset paths in the config based on the dataset name."""
     # Use paths from config instead of const/path.py
-    if config["dataset"] == "CUSTOM":
+    if config["dataset"] == "CUSTOM" or config["dataset"]=="ROBOT":
         if "dataset_path" not in config:
             raise ValueError("dataset_path not specified in config for CUSTOM dataset")
         config["dataset_root"] = config["dataset_path"]

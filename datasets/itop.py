@@ -48,17 +48,32 @@ class ITOP(Dataset):
         valid_joints_dict = {}
         list_joints_items = list(joints_dict.items())
 
+        # Check if using simple numeric IDs (e.g., '0', '1', '2') or ITOP format (e.g., '10300001')
+        sample_id = list(joints_dict.keys())[0] if joints_dict else "0"
+        is_simple_format = len(sample_id) <= 6  # Simple numeric IDs are typically shorter
+
         # Process joints based on if we are inputting only past timestamps (target_frame == 'last')
         # or past and future timestamps (target_frame == 'middle')
         if self.target_frame == "last":
             for identifier, (joints, is_valid) in joints_dict.items():
-                # If we are only using valid joints, check if joints are valid and identifier is greater than or equal to frames_per_clip
-                # (so we have enough frames to add)
-                if (
-                    use_valid_only
-                    and is_valid
-                    and int(identifier[-5:]) >= self.frames_per_clip
-                ):
+                frame_idx = int(identifier)
+
+                # Check if we have enough previous frames
+                if frame_idx < self.frames_per_clip - 1:
+                    continue
+
+                # Check validity if required
+                if use_valid_only and not is_valid:
+                    continue
+
+                # For simple format, collect consecutive frames
+                if is_simple_format:
+                    frames = [
+                        point_clouds_dict.get(str(frame_idx - self.frames_per_clip + 1 + i), None)
+                        for i in range(self.frames_per_clip)
+                    ]
+                else:
+                    # Original ITOP format logic
                     frames = [
                         point_clouds_dict.get(
                             identifier[:3]
@@ -69,73 +84,57 @@ class ITOP(Dataset):
                         )
                         for i in range(self.frames_per_clip)
                     ]
-                    valid_joints_dict[identifier] = (joints, frames)
-                # If not using valid_only, consider all joints
-                elif (
-                    not use_valid_only and int(identifier[-5:]) >= self.frames_per_clip
-                ):
-                    frames = [
-                        point_clouds_dict.get(
-                            identifier[:3]
-                            + str(
-                                int(identifier[-5:]) - self.frames_per_clip + 1 + i
-                            ).zfill(5),
-                            None,
-                        )
-                        for i in range(self.frames_per_clip)
-                    ]
+
+                # Only add if all frames exist
+                if all(frame is not None for frame in frames):
                     valid_joints_dict[identifier] = (joints, frames)
         # If we are considering past and future frames, we need to ensure that we have enough frames before and after,
         # and that they belong to the same person (see ITOP naming convention for more details)
         elif self.target_frame == "middle":
             for i, (identifier, (joints, is_valid)) in enumerate(list_joints_items):
-                # Get the identifier of the next frames_per_clip // 2 (i + frames_per_clip // 2 ) to make sure they belong to the same person
-                next_half_frames_per_clip_id_person, _ = (
-                    list_joints_items[i + self.frames_per_clip // 2]
-                    if i + self.frames_per_clip // 2 < len(list_joints_items)
-                    else (None, None)
-                )
-                # If no next identifier available, we don't consider the current joints because we don't have enough frames
-                if next_half_frames_per_clip_id_person is None:
+                frame_idx = int(identifier)
+                half_clip = self.frames_per_clip // 2
+
+                # Check if we have enough frames before and after
+                if frame_idx < half_clip or frame_idx + half_clip >= len(list_joints_items):
                     continue
-                # Check that the frames belong to the same person and that we have enough frames before and after
-                if (
-                    use_valid_only
-                    and is_valid
-                    and int(identifier[-5:]) >= self.frames_per_clip // 2
-                    and int(identifier[:2])
-                    == int(next_half_frames_per_clip_id_person[:2])
-                ):
-                    middle_frame_starting_index = (
-                        int(identifier[-5:]) - self.frames_per_clip // 2
+
+                # Check validity if required
+                if use_valid_only and not is_valid:
+                    continue
+
+                # For simple format, collect centered frames
+                if is_simple_format:
+                    middle_frame_starting_index = frame_idx - half_clip
+                    frames = [
+                        point_clouds_dict.get(str(middle_frame_starting_index + j), None)
+                        for j in range(self.frames_per_clip)
+                    ]
+                else:
+                    # Original ITOP format logic
+                    next_half_frames_per_clip_id_person, _ = (
+                        list_joints_items[i + half_clip]
+                        if i + half_clip < len(list_joints_items)
+                        else (None, None)
                     )
+                    if next_half_frames_per_clip_id_person is None:
+                        continue
+
+                    # Check that frames belong to same person
+                    if int(identifier[:2]) != int(next_half_frames_per_clip_id_person[:2]):
+                        continue
+
+                    middle_frame_starting_index = int(identifier[-5:]) - half_clip
                     frames = [
                         point_clouds_dict.get(
-                            identifier[:3]
-                            + str(middle_frame_starting_index + i).zfill(5),
+                            identifier[:3] + str(middle_frame_starting_index + j).zfill(5),
                             None,
                         )
-                        for i in range(self.frames_per_clip)
+                        for j in range(self.frames_per_clip)
                     ]
-                    valid_joints_dict[identifier] = (joints, frames)
-                # If not using valid_only, consider all joints (except for validity, same conditions as above)
-                elif (
-                    not use_valid_only
-                    and int(identifier[-5:]) >= self.frames_per_clip // 2
-                    and int(identifier[:2])
-                    == int(next_half_frames_per_clip_id_person[:2])
-                ):
-                    middle_frame_starting_index = (
-                        int(identifier[-5:]) - self.frames_per_clip // 2
-                    )
-                    frames = [
-                        point_clouds_dict.get(
-                            identifier[:3]
-                            + str(middle_frame_starting_index + i).zfill(5),
-                            None,
-                        )
-                        for i in range(self.frames_per_clip)
-                    ]
+
+                # Only add if all frames exist
+                if all(frame is not None for frame in frames):
                     valid_joints_dict[identifier] = (joints, frames)
         return valid_joints_dict
 
@@ -151,7 +150,12 @@ class ITOP(Dataset):
         )
         identifiers = labels_file["id"][:]
         joints = labels_file["real_world_coordinates"][:]
-        is_valid_flags = labels_file["is_valid"][:]
+        # Check if is_valid field exists, otherwise assume all are valid
+        if "is_valid" in labels_file:
+            is_valid_flags = labels_file["is_valid"][:]
+        else:
+            is_valid_flags = np.ones(len(identifiers), dtype=bool)
+            print(f"Warning: 'is_valid' field not found in labels file. Assuming all frames are valid.")
         labels_file.close()
 
         point_cloud_names = sorted(
@@ -222,4 +226,8 @@ class ITOP(Dataset):
             clip, _, joints = self.aug_pipeline.augment(clip, joints)
         joints = joints.view(1, -1, 3)
 
-        return clip, joints, np.array([tuple(map(int, identifier.split("_")))])
+        # For simple format, just return the frame index; for ITOP format, parse person_id and frame_id
+        if "_" in identifier:
+            return clip, joints, np.array([tuple(map(int, identifier.split("_")))])
+        else:
+            return clip, joints, np.array([[int(identifier)]])

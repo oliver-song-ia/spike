@@ -36,8 +36,8 @@ class PoseDetector(Node):
         super().__init__('pose_detector')
 
         # Declare parameters
-        self.declare_parameter('config_path', 'experiments/Custom/1')
-        self.declare_parameter('model_path', 'experiments/Custom/1/log/best_model.pth')
+        self.declare_parameter('config_path', 'experiments/Custom/pretrained')
+        self.declare_parameter('model_path', 'experiments/Custom/pretrained/log/best_model.pth')
         self.declare_parameter('device', 'cuda:0')
         self.declare_parameter('confidence_threshold', 0.5)
 

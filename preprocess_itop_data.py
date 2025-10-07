@@ -9,9 +9,21 @@ import h5py
 import numpy as np
 from tqdm import tqdm
 import argparse
+from multiprocessing import Pool
+from functools import partial
 
 
-def preprocess_point_clouds(data_root, output_file, split='train'):
+def load_single_pc(pc_name, point_clouds_folder):
+    """Load a single point cloud file - for parallel processing"""
+    try:
+        pc_path = os.path.join(point_clouds_folder, pc_name)
+        pc = np.load(pc_path)['arr_0']
+        return pc, pc.shape[0]
+    except Exception as e:
+        return None, 0
+
+
+def preprocess_point_clouds(data_root, output_file, split='train', num_workers=8):
     """
     Load all point cloud .npz files and save to a single HDF5 file
 
@@ -59,18 +71,21 @@ def preprocess_point_clouds(data_root, output_file, split='train'):
     print(f"\nCreating HDF5 file: {output_file}")
     os.makedirs(os.path.dirname(output_file), exist_ok=True)
 
-    # First pass: determine max point cloud size
+    # First pass: determine max point cloud size (parallel)
     print("\nScanning point cloud sizes...")
-    max_points = 0
-    pc_sizes = []
+    load_func = partial(load_single_pc, point_clouds_folder=point_clouds_folder)
 
-    for pc_name in tqdm(point_cloud_names[:100], desc="Sampling sizes"):  # Sample first 100
-        pc_path = os.path.join(point_clouds_folder, pc_name)
-        pc = np.load(pc_path)['arr_0']
-        max_points = max(max_points, pc.shape[0])
-        pc_sizes.append(pc.shape[0])
+    with Pool(num_workers) as pool:
+        sample_results = list(tqdm(
+            pool.imap(load_func, point_cloud_names[:100], chunksize=10),
+            total=min(100, len(point_cloud_names)),
+            desc="Sampling sizes"
+        ))
 
-    avg_points = int(np.mean(pc_sizes))
+    pc_sizes = [size for _, size in sample_results if size > 0]
+    max_points = max(pc_sizes) if pc_sizes else 10000
+    avg_points = int(np.mean(pc_sizes)) if pc_sizes else 5000
+
     print(f"Average points per cloud (sampled): {avg_points}")
     print(f"Max points per cloud (sampled): {max_points}")
 
@@ -82,12 +97,13 @@ def preprocess_point_clouds(data_root, output_file, split='train'):
         num_samples = len(point_cloud_names)
 
         # Point clouds: variable length, so we'll store as ragged array with size info
+        # Reduce compression for faster writing
         pc_dataset = hf.create_dataset(
             'point_clouds',
             shape=(num_samples, max_points, 3),
             dtype='float32',
             compression='gzip',
-            compression_opts=4
+            compression_opts=1  # Lighter compression for speed
         )
 
         # Store actual sizes
@@ -118,25 +134,26 @@ def preprocess_point_clouds(data_root, output_file, split='train'):
             dtype='bool'
         )
 
-        # Process all point clouds
+        # Process all point clouds (parallel loading)
         print(f"\nProcessing {num_samples} point clouds...")
 
-        for i, pc_name in enumerate(tqdm(point_cloud_names, desc=f"Processing {split}")):
-            pc_path = os.path.join(point_clouds_folder, pc_name)
+        with Pool(num_workers) as pool:
+            results = list(tqdm(
+                pool.imap(load_func, point_cloud_names, chunksize=100),
+                total=num_samples,
+                desc=f"Loading {split}"
+            ))
 
-            try:
-                pc = np.load(pc_path)['arr_0']
-
+        # Write to HDF5
+        print(f"Writing to HDF5...")
+        for i, (pc, size) in enumerate(tqdm(results, desc=f"Writing {split}")):
+            if pc is not None and size > 0:
                 # Store point cloud (pad if necessary)
-                actual_size = min(pc.shape[0], max_points)
+                actual_size = min(size, max_points)
                 pc_dataset[i, :actual_size, :] = pc[:actual_size, :]
                 sizes_dataset[i] = actual_size
-
-                # Store identifier
                 id_dataset[i] = identifiers[i].decode('utf-8')
-
-            except Exception as e:
-                print(f"\nError loading {pc_name}: {e}")
+            else:
                 # Fill with zeros if error
                 sizes_dataset[i] = 0
                 id_dataset[i] = f"error_{i}"

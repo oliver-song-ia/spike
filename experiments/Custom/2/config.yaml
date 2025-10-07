@@ -9,9 +9,9 @@ mode_val: true
 use_valid_only: true
 
 # Data paths
-experiments_path: '/home/oliver/Documents/SPiKE/'
-dataset_path: '/home/oliver/Documents/data/Mocap/itop_format'
-data_output_path: '/home/oliver/Documents/data/Mocap_dataset'
+experiments_path: '/home/ia-dev/oliver/spike'
+dataset_path: '/mnt/fsx/fsx/itop_format'
+data_output_path: '/mnt/fsx/fsx/Mocap_dataset'
 
 
 # input

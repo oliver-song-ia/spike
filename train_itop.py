@@ -47,9 +47,16 @@ def main(arguments):
         print(f"Loading model from {config['resume']}")
         checkpoint = torch.load(config["resume"], map_location="cpu")
         model_without_ddp.load_state_dict(checkpoint["model"], strict=True)
-        config["start_epoch"] = checkpoint["epoch"] + 1
-        lr_scheduler.load_state_dict(checkpoint["lr_scheduler"])
-        optimizer.load_state_dict(checkpoint["optimizer"])
+
+        # Check if finetuning mode
+        if config.get("finetune", False):
+            print("Finetuning mode: only loading model weights, resetting optimizer and scheduler")
+        else:
+            # Resume training: load optimizer and scheduler states
+            print(f"Resume mode: loading all training states from checkpoint epoch {checkpoint['epoch']}")
+            config["start_epoch"] = checkpoint["epoch"] + 1
+            lr_scheduler.load_state_dict(checkpoint["lr_scheduler"])
+            optimizer.load_state_dict(checkpoint["optimizer"])
 
     wandb.init(project=config["wandb_project"], name=arguments.config)
     wandb.config.update(config)

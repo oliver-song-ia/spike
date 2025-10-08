@@ -141,7 +141,7 @@ class ITOP(Dataset):
     def _load_data(self, use_valid_only):
         """Load the data from the dataset."""
 
-        point_clouds_folder = os.path.join(self.root, "train" if self.train else "test")
+        self.point_clouds_folder = os.path.join(self.root, "train" if self.train else "test")
         labels_file = h5py.File(
             os.path.join(
                 self.root, "train_labels.h5" if self.train else "test_labels.h5"
@@ -159,20 +159,12 @@ class ITOP(Dataset):
         labels_file.close()
 
         point_cloud_names = sorted(
-            os.listdir(point_clouds_folder), key=lambda x: int(x.split(".")[0])
+            os.listdir(self.point_clouds_folder), key=lambda x: int(x.split(".")[0])
         )
-        point_clouds = []
 
-        for pc_name in tqdm.tqdm(
-            point_cloud_names,
-            f"Loading {'train' if self.train else 'test'} point clouds",
-        ):
-            point_clouds.append(
-                np.load(os.path.join(point_clouds_folder, pc_name))["arr_0"]
-            )
-
+        # Store file paths instead of loading all data into memory
         point_clouds_dict = {
-            identifier.decode("utf-8"): point_clouds[i]
+            identifier.decode("utf-8"): os.path.join(self.point_clouds_folder, point_cloud_names[i])
             for i, identifier in enumerate(identifiers)
         }
         joints_dict = {
@@ -187,7 +179,7 @@ class ITOP(Dataset):
 
         if use_valid_only:
             print(
-                f"Using only frames labeled as valid. From the total of {len(point_clouds)} "
+                f"Using only frames labeled as valid. From the total of {len(point_cloud_names)} "
                 f"{'train' if self.train else 'test'} frames using {len(self.valid_identifiers)} valid joints"
             )
 
@@ -211,13 +203,15 @@ class ITOP(Dataset):
 
     def __getitem__(self, idx):
         identifier = self.valid_identifiers[idx]
-        joints, clip = self.valid_joints_dict.get(
+        joints, clip_paths = self.valid_joints_dict.get(
             identifier, (None, [None] * self.frames_per_clip)
         )
 
-        if joints is None or any(frame is None for frame in clip):
+        if joints is None or any(frame_path is None for frame_path in clip_paths):
             raise ValueError(f"Invalid joints or frames for identifier {identifier}")
 
+        # Load point clouds on demand
+        clip = [np.load(frame_path)["arr_0"] for frame_path in clip_paths]
         clip = [self._random_sample_pc(p) for p in clip]
         clip = torch.FloatTensor(clip)
         joints = torch.FloatTensor(joints).view(1, -1, 3)

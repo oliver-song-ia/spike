@@ -23,7 +23,7 @@ def load_single_pc(pc_name, point_clouds_folder):
         return None, 0
 
 
-def preprocess_point_clouds(data_root, output_file, split='train', num_workers=8):
+def preprocess_point_clouds(data_root, output_file, split='train', num_workers=4):
     """
     Load all point cloud .npz files and save to a single HDF5 file
 

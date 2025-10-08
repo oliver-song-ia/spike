@@ -4,7 +4,7 @@ device_args: 0
 seed: 0
 model: 'SPiKE'
 wandb_project: 'hpe'
-mode_train: false
+mode_train: true
 mode_val: true
 use_valid_only: true
 
@@ -41,8 +41,8 @@ dropout2: 0.0
 # training
 batch_size: 24
 epochs: 50
-workers: 8
-lr: 0.01
+workers: 4
+lr: 0.001
 momentum: 0.9
 weight_decay: 1e-4
 lr_milestones:
@@ -52,8 +52,9 @@ lr_gamma: 0.1
 lr_warmup_epochs: 0
 # output
 log_dir: "log"
+output_dir: '/home/ia-dev/oliver/spike/experiments/Custom/pretrained/finetuned'
     # resume
-resume: ''
+resume: '/home/ia-dev/oliver/spike/experiments/Custom/pretrained/best_model.pth'
 start_epoch: 0
     # losses
 loss_type: 'weighted_l1'

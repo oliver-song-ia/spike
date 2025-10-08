@@ -47,7 +47,12 @@ def main(arguments):
         print(f"Loading model from {config['resume']}")
         checkpoint = torch.load(config["resume"], map_location="cpu")
         model_without_ddp.load_state_dict(checkpoint["model"], strict=True)
-        config["start_epoch"] = checkpoint["epoch"] + 1
+        # Only resume epoch if start_epoch is not explicitly set in config
+        if "start_epoch" not in config or config["start_epoch"] == 0:
+            # For finetuning, keep start_epoch as 0; for resuming, use checkpoint epoch
+            print(f"Config start_epoch: {config.get('start_epoch', 0)}, Checkpoint epoch: {checkpoint['epoch']}")
+            # If you want to resume training, uncomment the next line:
+            # config["start_epoch"] = checkpoint["epoch"] + 1
         lr_scheduler.load_state_dict(checkpoint["lr_scheduler"])
         optimizer.load_state_dict(checkpoint["optimizer"])
 

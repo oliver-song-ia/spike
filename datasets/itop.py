@@ -213,7 +213,7 @@ class ITOP(Dataset):
         # Load point clouds on demand
         clip = [np.load(frame_path)["arr_0"] for frame_path in clip_paths]
         clip = [self._random_sample_pc(p) for p in clip]
-        clip = torch.FloatTensor(clip)
+        clip = torch.FloatTensor(np.array(clip))
         joints = torch.FloatTensor(joints).view(1, -1, 3)
 
         if self.aug_pipeline:

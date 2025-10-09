@@ -45,7 +45,7 @@ def main(arguments):
 
     if config["resume"]:
         print(f"Loading model from {config['resume']}")
-        checkpoint = torch.load(config["resume"], map_location="cpu")
+        checkpoint = torch.load(config["resume"], map_location="cpu", weights_only=False)
         model_without_ddp.load_state_dict(checkpoint["model"], strict=True)
 
         # Check if finetuning mode
@@ -62,6 +62,11 @@ def main(arguments):
     wandb.config.update(config)
     wandb.watch_called = False
 
+    # Initialize GradScaler for automatic mixed precision
+    from torch.amp import GradScaler
+    scaler = GradScaler('cuda')
+    print("Using automatic mixed precision (AMP) for training")
+
     print("Start training")
     min_loss = sys.maxsize
     eval_thresh = config["threshold"]
@@ -76,6 +81,7 @@ def main(arguments):
             device,
             epoch,
             eval_thresh,
+            scaler,
         )
         val_clip_loss, val_pck, val_map = evaluate(
             model, criterion, data_loader_test, device=device, threshold=eval_thresh

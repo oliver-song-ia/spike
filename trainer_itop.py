@@ -5,13 +5,15 @@ Module for training and evaluating the SPiKE model on the ITOP dataset.
 from tqdm import tqdm
 import torch
 from torch import nn
+from torch.amp import autocast
+from torch.cuda.amp import GradScaler
 import numpy as np
 from datasets.itop import ITOP
 from utils import metrics, scheduler
 
 
 def train_one_epoch(
-    model, criterion, optimizer, lr_scheduler, data_loader, device, epoch, threshold
+    model, criterion, optimizer, lr_scheduler, data_loader, device, epoch, threshold, scaler=None
 ):
 
     model.train()
@@ -19,21 +21,36 @@ def train_one_epoch(
     total_loss = 0.0
     total_pck = np.zeros(15)
     total_map = 0.0
+    use_amp = scaler is not None
 
     for clip, target, _ in tqdm(data_loader, desc=header):
         clip, target = clip.to(device), target.to(device)
-        output = model(clip).reshape(target.shape)
-        loss = criterion(output, target)
+
+        optimizer.zero_grad()
+
+        # Use automatic mixed precision if scaler is provided
+        if use_amp:
+            with autocast(device_type='cuda'):
+                output = model(clip).reshape(target.shape)
+                loss = criterion(output, target)
+
+            # Scale loss and backward pass
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            output = model(clip).reshape(target.shape)
+            loss = criterion(output, target)
+            loss.backward()
+            optimizer.step()
+
+        # Update learning rate scheduler after optimizer step
+        lr_scheduler.step()
 
         pck, mean_ap = metrics.joint_accuracy(output, target, threshold)
         total_pck += pck.detach().cpu().numpy()
         total_map += mean_ap.detach().cpu().item()
-
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
         total_loss += loss.item()
-        lr_scheduler.step()
 
     total_loss /= len(data_loader)
     total_map /= len(data_loader)
@@ -101,6 +118,9 @@ def load_data(config, mode="train"):
             batch_size=config["batch_size"],
             shuffle=True,
             num_workers=config["workers"],
+            pin_memory=True,
+            persistent_workers=True,
+            prefetch_factor=4,  # Increased from 2 to 4 for better data pipeline
         )
         data_loader_test = torch.utils.data.DataLoader(
             dataset_test, batch_size=config["batch_size"], num_workers=config["workers"]

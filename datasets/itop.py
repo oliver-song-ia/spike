@@ -42,8 +42,8 @@ class ITOP(Dataset):
         else:
             self.aug_pipeline = None
 
-    def _get_valid_joints(self, use_valid_only, joints_dict, point_clouds_dict):
-        """Cumbersome but necessary logic to create clips of only valid joints and their corresponding frames."""
+    def _get_valid_joints(self, use_valid_only, joints_dict, point_clouds_dict, traj_id_dict=None):
+        """Create clips with padding for early frames in each trajectory."""
 
         valid_joints_dict = {}
         list_joints_items = list(joints_dict.items())
@@ -52,90 +52,57 @@ class ITOP(Dataset):
         sample_id = list(joints_dict.keys())[0] if joints_dict else "0"
         is_simple_format = len(sample_id) <= 6  # Simple numeric IDs are typically shorter
 
-        # Process joints based on if we are inputting only past timestamps (target_frame == 'last')
-        # or past and future timestamps (target_frame == 'middle')
-        if self.target_frame == "last":
-            for identifier, (joints, is_valid) in joints_dict.items():
-                frame_idx = int(identifier)
+        if self.target_frame != "last":
+            raise ValueError(f"Unsupported target_frame mode: {self.target_frame}. Only 'last' is supported.")
 
-                # Check if we have enough previous frames
-                if frame_idx < self.frames_per_clip - 1:
-                    continue
+        # Build trajectory start index mapping
+        traj_start_indices = {}
+        if traj_id_dict:
+            current_traj = None
+            for idx, identifier in enumerate(sorted(joints_dict.keys(), key=lambda x: int(x))):
+                traj_id = traj_id_dict.get(identifier)
+                if traj_id != current_traj:
+                    current_traj = traj_id
+                    traj_start_indices[traj_id] = idx
 
-                # Check validity if required
-                if use_valid_only and not is_valid:
-                    continue
+        for identifier, (joints, is_valid) in joints_dict.items():
+            # Check validity if required
+            if use_valid_only and not is_valid:
+                continue
 
-                # For simple format, collect consecutive frames
-                if is_simple_format:
-                    frames = [
-                        point_clouds_dict.get(str(frame_idx - self.frames_per_clip + 1 + i), None)
-                        for i in range(self.frames_per_clip)
-                    ]
+            # Parse person_id and global frame number
+            if '_' in identifier:
+                person_id, global_frame_str = identifier.split('_')
+                global_frame_num = int(global_frame_str)
+            else:
+                person_id = ""
+                global_frame_num = int(identifier)
+
+            # Collect frames with padding for early frames
+            frames = []
+            for i in range(self.frames_per_clip):
+                target_global_num = global_frame_num - self.frames_per_clip + 1 + i
+
+                # Construct target identifier
+                if person_id:
+                    target_identifier = f"{person_id}_{target_global_num:05d}"
                 else:
-                    # Original ITOP format logic
-                    frames = [
-                        point_clouds_dict.get(
-                            identifier[:3]
-                            + str(
-                                int(identifier[-5:]) - self.frames_per_clip + 1 + i
-                            ).zfill(5),
-                            None,
-                        )
-                        for i in range(self.frames_per_clip)
-                    ]
+                    target_identifier = str(target_global_num)
 
-                # Only add if all frames exist
-                if all(frame is not None for frame in frames):
-                    valid_joints_dict[identifier] = (joints, frames)
-        # If we are considering past and future frames, we need to ensure that we have enough frames before and after,
-        # and that they belong to the same person (see ITOP naming convention for more details)
-        elif self.target_frame == "middle":
-            for i, (identifier, (joints, is_valid)) in enumerate(list_joints_items):
-                frame_idx = int(identifier)
-                half_clip = self.frames_per_clip // 2
+                # Get frame path, with padding for negative or missing frames
+                frame_path = point_clouds_dict.get(target_identifier, None)
 
-                # Check if we have enough frames before and after
-                if frame_idx < half_clip or frame_idx + half_clip >= len(list_joints_items):
-                    continue
+                # If frame doesn't exist (before trajectory start), use first frame of current trajectory for padding
+                if frame_path is None:
+                    # Use current frame identifier as padding
+                    frame_path = point_clouds_dict.get(identifier, None)
 
-                # Check validity if required
-                if use_valid_only and not is_valid:
-                    continue
+                frames.append(frame_path)
 
-                # For simple format, collect centered frames
-                if is_simple_format:
-                    middle_frame_starting_index = frame_idx - half_clip
-                    frames = [
-                        point_clouds_dict.get(str(middle_frame_starting_index + j), None)
-                        for j in range(self.frames_per_clip)
-                    ]
-                else:
-                    # Original ITOP format logic
-                    next_half_frames_per_clip_id_person, _ = (
-                        list_joints_items[i + half_clip]
-                        if i + half_clip < len(list_joints_items)
-                        else (None, None)
-                    )
-                    if next_half_frames_per_clip_id_person is None:
-                        continue
+            # Only add if at least the target frame exists
+            if all(frame is not None for frame in frames):
+                valid_joints_dict[identifier] = (joints, frames)
 
-                    # Check that frames belong to same person
-                    if int(identifier[:2]) != int(next_half_frames_per_clip_id_person[:2]):
-                        continue
-
-                    middle_frame_starting_index = int(identifier[-5:]) - half_clip
-                    frames = [
-                        point_clouds_dict.get(
-                            identifier[:3] + str(middle_frame_starting_index + j).zfill(5),
-                            None,
-                        )
-                        for j in range(self.frames_per_clip)
-                    ]
-
-                # Only add if all frames exist
-                if all(frame is not None for frame in frames):
-                    valid_joints_dict[identifier] = (joints, frames)
         return valid_joints_dict
 
     def _load_data(self, use_valid_only):
@@ -156,6 +123,9 @@ class ITOP(Dataset):
         else:
             is_valid_flags = np.ones(len(identifiers), dtype=bool)
             print(f"Warning: 'is_valid' field not found in labels file. Assuming all frames are valid.")
+
+        # Load traj_id if available for padding logic
+        traj_ids = labels_file["traj_id"][:] if "traj_id" in labels_file else None
         labels_file.close()
 
         point_cloud_names = sorted(
@@ -171,9 +141,13 @@ class ITOP(Dataset):
             identifier.decode("utf-8"): (joints[i], is_valid_flags[i])
             for i, identifier in enumerate(identifiers)
         }
+        traj_id_dict = {
+            identifier.decode("utf-8"): traj_ids[i].decode("utf-8") if isinstance(traj_ids[i], bytes) else traj_ids[i]
+            for i, identifier in enumerate(identifiers)
+        } if traj_ids is not None else None
 
         self.valid_joints_dict = self._get_valid_joints(
-            use_valid_only, joints_dict, point_clouds_dict
+            use_valid_only, joints_dict, point_clouds_dict, traj_id_dict
         )
         self.valid_identifiers = list(self.valid_joints_dict.keys())
 

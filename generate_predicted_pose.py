@@ -68,28 +68,43 @@ def load_original_centroids(train_dir, train_labels_file):
     return centroids
 
 
-def load_session_info(itop_format_dir):
+def load_session_info(labels_file):
     """
-    Build frame_id -> (traj_id, frame_in_session) mapping from session folders (prefix '2025-').
+    Build frame_id -> (traj_id_str, frame_in_session) mapping from traj_id field in labels file.
+    Also returns frame_num -> original_frame_id mapping.
     """
     print("Loading session map...")
-    session_dirs = [d for d in os.listdir(itop_format_dir)
-                    if os.path.isdir(os.path.join(itop_format_dir, d)) and d.startswith('2025-')]
-    session_dirs.sort()
+    with h5py.File(labels_file, 'r') as f:
+        identifiers = f['id'][:]
+        if 'traj_id' not in f:
+            print("Warning: 'traj_id' field not found in labels file. All traj_id will be -1.")
+            return {}, {}
+        traj_ids = f['traj_id'][:]
 
+    # Decode identifiers and traj_ids
+    identifiers = [id.decode('utf-8') if isinstance(id, bytes) else str(id) for id in identifiers]
+    traj_ids_decoded = [tid.decode('utf-8') if isinstance(tid, bytes) else str(tid) for tid in traj_ids]
+
+    # Track frame_in_session counter for each traj_id
+    session_frame_counters = {}
     frame_to_session_map = {}
-    current_frame_id = 0
-    for traj_id, session_dir in enumerate(session_dirs):
-        labels_file = os.path.join(itop_format_dir, session_dir, 'labels.h5')
-        if not os.path.exists(labels_file):
-            continue
-        with h5py.File(labels_file, 'r') as f:
-            n = len(f['id'][:])
-        for frame_in_session in range(n):
-            frame_id = f"00_{current_frame_id:05d}"
-            frame_to_session_map[frame_id] = (traj_id, frame_in_session)
-            current_frame_id += 1
-    return frame_to_session_map
+    frame_num_to_id_map = {}
+
+    for idx, (frame_id, traj_id_str) in enumerate(zip(identifiers, traj_ids_decoded)):
+        if traj_id_str not in session_frame_counters:
+            session_frame_counters[traj_id_str] = 0
+
+        frame_in_session = session_frame_counters[traj_id_str]
+        frame_to_session_map[frame_id] = (traj_id_str, frame_in_session)
+        session_frame_counters[traj_id_str] += 1
+
+        # Extract frame number from frame_id (e.g., "00_00123" -> 123)
+        frame_num = int(frame_id.split('_')[-1])
+        frame_num_to_id_map[frame_num] = frame_id
+
+    print(f"Found {len(set(traj_ids_decoded))} unique trajectories")
+    print(f"Loaded {len(frame_num_to_id_map)} frame ID mappings")
+    return frame_to_session_map, frame_num_to_id_map
 
 
 def process_arm_coordinates(arm_coords):
@@ -177,7 +192,7 @@ def _load_arm_mapping(arm_labels_file):
     return arm_mapping
 
 
-def create_trajectory_csv(predictions, video_ids, session_map, arm_labels_file, output_csv_file):
+def create_trajectory_csv(predictions, video_ids, session_map, frame_num_to_id_map, arm_labels_file, output_csv_file):
     """
     CSV with predicted joints (upper body 9 joints) + (optional) processed arm endpoints.
     """
@@ -188,11 +203,12 @@ def create_trajectory_csv(predictions, video_ids, session_map, arm_labels_file, 
     arm_mapping = _load_arm_mapping(arm_labels_file)
 
     rows = []
-    for pred_joints, frame_id in zip(predictions, video_ids):
-        frame_id_str = f"00_{int(frame_id):05d}"
-        traj_id, frame_in_session = session_map.get(frame_id_str, (-1, -1))
+    for pred_joints, frame_num in zip(predictions, video_ids):
+        # Get original frame_id from labels file
+        frame_id_str = frame_num_to_id_map.get(int(frame_num), f"UNKNOWN_{int(frame_num):05d}")
+        traj_id_str, frame_in_session = session_map.get(frame_id_str, ("UNKNOWN", -1))
 
-        row = {'traj_id': traj_id, 'frame_id': frame_id_str, 'frame_in_session': frame_in_session}
+        row = {'traj_id': traj_id_str, 'frame_id': frame_id_str, 'frame_in_session': frame_in_session}
         pj = _to_K3(pred_joints)
         for j, name in enumerate(joint_names):
             if j < len(pj):
@@ -217,7 +233,7 @@ def create_trajectory_csv(predictions, video_ids, session_map, arm_labels_file, 
     print(f"CSV (pred) saved: {output_csv_file} | frames: {len(df)}")
 
 
-def create_trajectory_csv_gt(ground_truths, video_ids, session_map, arm_labels_file, output_csv_file):
+def create_trajectory_csv_gt(ground_truths, video_ids, session_map, frame_num_to_id_map, arm_labels_file, output_csv_file):
     """
     CSV with ground-truth joints (all 15) + (optional) processed arm endpoints.
     """
@@ -229,11 +245,12 @@ def create_trajectory_csv_gt(ground_truths, video_ids, session_map, arm_labels_f
     arm_mapping = _load_arm_mapping(arm_labels_file)
 
     rows = []
-    for gt_joints, frame_id in zip(ground_truths, video_ids):
-        frame_id_str = f"00_{int(frame_id):05d}"
-        traj_id, frame_in_session = session_map.get(frame_id_str, (-1, -1))
+    for gt_joints, frame_num in zip(ground_truths, video_ids):
+        # Get original frame_id from labels file
+        frame_id_str = frame_num_to_id_map.get(int(frame_num), f"UNKNOWN_{int(frame_num):05d}")
+        traj_id_str, frame_in_session = session_map.get(frame_id_str, ("UNKNOWN", -1))
 
-        row = {'traj_id': traj_id, 'frame_id': frame_id_str, 'frame_in_session': frame_in_session}
+        row = {'traj_id': traj_id_str, 'frame_id': frame_id_str, 'frame_in_session': frame_in_session}
         gj = _to_K3(gt_joints)
         for j, name in enumerate(joint_names):
             if j < len(gj):
@@ -264,10 +281,18 @@ def main(arguments):
     device = torch.device(0)
     set_random_seed(config.get("seed", 0))
 
+    # Determine mode (train or test)
+    mode = arguments.mode
+    print(f"Running inference on {mode} data...")
+
     # data
-    print("Loading test data...")
-    data_loader_test, num_coord_joints = load_data(config, mode="test")
-    print(f"Test size: {len(data_loader_test.dataset)}")
+    if mode == "train":
+        # load_data returns 3 values in train mode
+        data_loader, _, num_coord_joints = load_data(config, mode="train")
+    else:
+        # load_data returns 2 values in test mode
+        data_loader, num_coord_joints = load_data(config, mode="test")
+    print(f"{mode.capitalize()} size: {len(data_loader.dataset)}")
 
     # model
     print(f"Loading model: {arguments.model}")
@@ -278,31 +303,32 @@ def main(arguments):
 
     # centroids for world restore
     data_output_path = config.get('data_output_path', config.get('experiments_path', '.'))
-    train_dir = os.path.join(data_output_path, 'train')
-    train_labels_file = os.path.join(data_output_path, 'train_labels.h5')
-    centroids_dict = load_original_centroids(train_dir, train_labels_file)
+    data_dir = os.path.join(data_output_path, mode)
+    labels_file = os.path.join(data_output_path, f'{mode}_labels.h5')
+    centroids_dict = load_original_centroids(data_dir, labels_file)
 
     # inference (world coords)
-    predictions, ground_truths, video_ids = generate_predictions(model, data_loader_test, device, centroids_dict)
+    predictions, ground_truths, video_ids = generate_predictions(model, data_loader, device, centroids_dict)
 
     # session map & CSV export
-    itop_format_dir = config.get('dataset_path', '')
-    arm_labels_file = os.path.join(data_output_path, 'arm_labels.h5')
-    session_map = load_session_info(itop_format_dir)
+    arm_labels_file = os.path.join(data_output_path, f'{mode}_arm_labels.h5')
+    session_map, frame_num_to_id_map = load_session_info(labels_file)
 
-    out_pred_csv = os.path.join(config.get("output_dir", "."), "inference_trajectory.csv")
-    out_gt_csv = os.path.join(config.get("output_dir", "."), "inference_trajectory_gt.csv")
+    out_pred_csv = os.path.join(config.get("output_dir", "."), f"inference_trajectory_{mode}.csv")
+    out_gt_csv = os.path.join(config.get("output_dir", "."), f"inference_trajectory_gt_{mode}.csv")
 
-    create_trajectory_csv(predictions, video_ids, session_map, arm_labels_file, out_pred_csv)
-    create_trajectory_csv_gt(ground_truths, video_ids, session_map, arm_labels_file, out_gt_csv)
+    create_trajectory_csv(predictions, video_ids, session_map, frame_num_to_id_map, arm_labels_file, out_pred_csv)
+    create_trajectory_csv_gt(ground_truths, video_ids, session_map, frame_num_to_id_map, arm_labels_file, out_gt_csv)
 
     print("Done.")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="ITOP inference → CSV (world coords)")
-    parser.add_argument("--config", type=str, default="experiments/Custom/1",
+    parser.add_argument("--config", type=str, default="experiments/Custom/pretrained-full",
                         help="Path to the YAML config directory or file")
+    parser.add_argument("--mode", type=str, default="test", choices=["train", "test"],
+                        help="Run inference on train or test data")
     args = parser.parse_args()
 
     cfg = load_config(args.config)

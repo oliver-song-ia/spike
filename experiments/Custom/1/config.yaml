@@ -10,8 +10,7 @@ use_valid_only: true
 
 # Data paths
 experiments_path: '/home/oliver/Documents/SPiKE/'
-dataset_path: '/home/oliver/Documents/data/Mocap/itop_format'
-data_output_path: '/home/oliver/Documents/data/Mocap'
+dataset_path: '/media/oliver/SSD/Mocap-full/Mocap_dataset'
 
 
 # input

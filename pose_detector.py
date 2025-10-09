@@ -37,7 +37,7 @@ class PoseDetector(Node):
 
         # Declare parameters
         self.declare_parameter('config_path', 'experiments/Custom/pretrained-full')
-        self.declare_parameter('model_path', 'experiments/Custom/pretrained-full/best_model.pth')
+        self.declare_parameter('model_path', 'experiments/Custom/pretrained-full/log/best_model.pth')
         self.declare_parameter('device', 'cuda:0')
         self.declare_parameter('confidence_threshold', 0.5)
 
@@ -197,26 +197,20 @@ class PoseDetector(Node):
 
     def predict_pose(self, points):
         """Run model inference on preprocessed point cloud"""
-        start_time = time.time()
-
         try:
             # Preprocess
-            preprocess_start = time.time()
             preprocessed = self.preprocess_pointcloud(points)
             if preprocessed is None:
                 return None
-            preprocess_time = time.time() - preprocess_start
 
             points_tensor, centroid = preprocessed
 
             # Convert to tensor and add batch and temporal dimensions
-            tensor_start = time.time()
             # SPiKE expects (batch_size, frames_per_clip, num_points, 3)
             # We replicate the single frame 16 times to match training format
             frames_per_clip = 16
             points_expanded = np.repeat(points_tensor[np.newaxis, :, :], frames_per_clip, axis=0)  # (16, 2048, 3)
             input_tensor = torch.from_numpy(points_expanded).unsqueeze(0).to(self.device)  # (1, 16, 2048, 3)
-            tensor_time = time.time() - tensor_start
 
             # Debug info
             self.get_logger().debug(f'Input points shape: {points.shape}')
@@ -231,30 +225,16 @@ class PoseDetector(Node):
 
                 # Reshape output from (1, 45) to (15, 3) - 15 joints, 3 coordinates each
                 joints_pred = output.reshape(-1, 3).cpu().numpy()  # Should be (15, 3)
-            inference_time = time.time() - inference_start
+            inference_time = (time.time() - inference_start) * 1000  # ms
 
             # Postprocess back to original coordinate system
-            postprocess_start = time.time()
             joints_original = self.postprocess_joints(joints_pred, centroid)
-            postprocess_time = time.time() - postprocess_start
 
-            # Calculate total time
-            total_time = time.time() - start_time
-
-            # Print timing information
-            self.get_logger().info(f'Inference timing: '
-                                  f'Total={total_time*1000:.1f}ms '
-                                  f'(Preprocess={preprocess_time*1000:.1f}ms, '
-                                  f'Tensor={tensor_time*1000:.1f}ms, '
-                                  f'Inference={inference_time*1000:.1f}ms, '
-                                  f'Postprocess={postprocess_time*1000:.1f}ms)')
-
-            return joints_original
+            return joints_original, inference_time
 
         except Exception as e:
-            total_time = time.time() - start_time
-            self.get_logger().error(f'Prediction failed after {total_time*1000:.1f}ms: {str(e)}')
-            return None
+            self.get_logger().error(f'Prediction failed: {str(e)}')
+            return None, 0.0
 
     def create_skeleton_marker_array(self, joints, timestamp):
         """Create MarkerArray message for skeleton visualization (upper body only)"""
@@ -350,6 +330,9 @@ class PoseDetector(Node):
     def pointcloud_callback(self, msg):
         """Callback function for point cloud messages"""
         try:
+            # Record callback start time
+            callback_start_time = time.time()
+
             # Convert ROS message to numpy array
             points = self.pointcloud_to_numpy(msg)
 
@@ -360,13 +343,34 @@ class PoseDetector(Node):
             self.get_logger().debug(f'Processing point cloud with {len(points)} points')
 
             # Predict pose
-            joints = self.predict_pose(points)
+            result = self.predict_pose(points)
 
-            if joints is not None:
+            if result[0] is not None:
+                joints, inference_time = result
+
                 # Create and publish skeleton marker array
                 marker_msg = self.create_skeleton_marker_array(joints, msg.header.stamp)
+
+                # Publish pose
+                publish_time = time.time()
                 self.pose_publisher.publish(marker_msg)
 
+                # Calculate end-to-end latency
+                # Convert ROS timestamp to seconds
+                input_timestamp = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
+                current_time = publish_time
+
+                # Total latency from point cloud capture to pose publish
+                end_to_end_latency = (current_time - input_timestamp) * 1000  # ms
+
+                # Processing time (callback start to publish)
+                processing_time = (publish_time - callback_start_time) * 1000  # ms
+
+                self.get_logger().info(
+                    f'Latency: End-to-end={end_to_end_latency:.1f}ms, '
+                    f'Processing={processing_time:.1f}ms, '
+                    f'Inference={inference_time:.1f}ms'
+                )
                 self.get_logger().debug(f'Published skeleton with {len(marker_msg.markers)} markers')
             else:
                 self.get_logger().warn('Failed to predict pose')

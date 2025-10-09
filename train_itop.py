@@ -58,9 +58,19 @@ def main(arguments):
             lr_scheduler.load_state_dict(checkpoint["lr_scheduler"])
             optimizer.load_state_dict(checkpoint["optimizer"])
 
-    wandb.init(project=config["wandb_project"], name=arguments.config)
-    wandb.config.update(config)
-    wandb.watch_called = False
+    # Initialize wandb with offline mode as fallback
+    try:
+        wandb.init(
+            project=config["wandb_project"],
+            name=arguments.config,
+            settings=wandb.Settings(start_method="thread")
+        )
+        wandb.config.update(config)
+        wandb.watch_called = False
+    except Exception as e:
+        print(f"Warning: wandb initialization failed: {e}")
+        print("Continuing training without wandb logging...")
+        wandb.init(mode="disabled")
 
     # Initialize GradScaler for automatic mixed precision
     from torch.amp import GradScaler
@@ -87,22 +97,40 @@ def main(arguments):
             model, criterion, data_loader_test, device=device, threshold=eval_thresh
         )
 
-        data1 = [(idx, train_pck[idx]) for idx in range(len(train_pck))]
-        data2 = [(idx, val_pck[idx]) for idx in range(len(val_pck))]
-        table1 = wandb.Table(data=data1, columns=["joint", "pck"])
-        table2 = wandb.Table(data=data2, columns=["joint", "pck"])
+        # Log to wandb with error handling
+        try:
+            data1 = [(idx, train_pck[idx]) for idx in range(len(train_pck))]
+            data2 = [(idx, val_pck[idx]) for idx in range(len(val_pck))]
+            table1 = wandb.Table(data=data1, columns=["joint", "pck"])
+            table2 = wandb.Table(data=data2, columns=["joint", "pck"])
 
-        wandb.log(
-            {
-                "Train loss": train_clip_loss,
-                "Train mAP": train_map,
-                "Train PCK": wandb.plot.bar(table1, "joint", "pck", title="Train PCK"),
-                "Val loss": val_clip_loss,
-                "Val mAP": val_map,
-                "Val PCK": wandb.plot.bar(table2, "joint", "pck", title="Val PCK"),
-                "lr": optimizer.param_groups[0]["lr"],
-            }
-        )
+            wandb.log(
+                {
+                    "Train loss": train_clip_loss,
+                    "Train mAP": train_map,
+                    "Train PCK": wandb.plot.bar(table1, "joint", "pck", title="Train PCK"),
+                    "Val loss": val_clip_loss,
+                    "Val mAP": val_map,
+                    "Val PCK": wandb.plot.bar(table2, "joint", "pck", title="Val PCK"),
+                    "lr": optimizer.param_groups[0]["lr"],
+                }
+            )
+        except Exception as e:
+            print(f"Warning: wandb logging failed at epoch {epoch}: {e}")
+            print("Continuing training without logging this epoch...")
+            # Try logging basic metrics without plots as fallback
+            try:
+                wandb.log(
+                    {
+                        "Train loss": train_clip_loss,
+                        "Train mAP": train_map,
+                        "Val loss": val_clip_loss,
+                        "Val mAP": val_map,
+                        "lr": optimizer.param_groups[0]["lr"],
+                    }
+                )
+            except:
+                pass  # Continue training even if basic logging fails
 
         print(f"Epoch {epoch} - Train Loss: {train_clip_loss:.4f}")
         print(f"Epoch {epoch} - Train mAP: {train_map:.4f}")

@@ -285,13 +285,33 @@ def main(arguments):
     mode = arguments.mode
     print(f"Running inference on {mode} data...")
 
-    # data
-    if mode == "train":
-        # load_data returns 3 values in train mode
-        data_loader, _, num_coord_joints = load_data(config, mode="train")
-    else:
-        # load_data returns 2 values in test mode
-        data_loader, num_coord_joints = load_data(config, mode="test")
+    # data - create DataLoader without shuffle for inference
+    from datasets.itop import ITOP
+
+    dataset_params = {
+        "root": config.get("data_output_path", config["dataset_path"]),
+        "frames_per_clip": config["frames_per_clip"],
+        "num_points": config["num_points"],
+        "use_valid_only": config["use_valid_only"],
+        "target_frame": config["target_frame"],
+    }
+
+    # Create dataset based on mode
+    # IMPORTANT: Always use TEST augmentation (no rotation/mirror) for inference to get consistent results
+    is_train = (mode == "train")
+    aug_list = config["PREPROCESS_TEST"]  # Use test preprocessing for both train and test
+    dataset = ITOP(train=is_train, aug_list=aug_list, **dataset_params)
+
+    # Create DataLoader WITHOUT shuffle for inference (to preserve frame order)
+    data_loader = torch.utils.data.DataLoader(
+        dataset,
+        batch_size=config["batch_size"],
+        shuffle=False,  # Important: no shuffle for inference
+        num_workers=config["workers"],
+        pin_memory=True
+    )
+
+    num_coord_joints = dataset.num_coord_joints
     print(f"{mode.capitalize()} size: {len(data_loader.dataset)}")
 
     # model

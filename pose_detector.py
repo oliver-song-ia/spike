@@ -207,10 +207,10 @@ class PoseDetector(Node):
 
             # Convert to tensor and add batch and temporal dimensions
             # SPiKE expects (batch_size, frames_per_clip, num_points, 3)
-            # We replicate the single frame 16 times to match training format
-            frames_per_clip = 16
-            points_expanded = np.repeat(points_tensor[np.newaxis, :, :], frames_per_clip, axis=0)  # (16, 2048, 3)
-            input_tensor = torch.from_numpy(points_expanded).unsqueeze(0).to(self.device)  # (1, 16, 2048, 3)
+            # We replicate the single frame to match training format (frames_per_clip=3)
+            frames_per_clip = 3  # Match training configuration
+            points_expanded = np.repeat(points_tensor[np.newaxis, :, :], frames_per_clip, axis=0)  # (3, 2048, 3)
+            input_tensor = torch.from_numpy(points_expanded).unsqueeze(0).to(self.device)  # (1, 3, 2048, 3)
 
             # Debug info
             self.get_logger().debug(f'Input points shape: {points.shape}')
@@ -355,13 +355,16 @@ class PoseDetector(Node):
                 publish_time = time.time()
                 self.pose_publisher.publish(marker_msg)
 
-                # Calculate end-to-end latency
+                # Calculate latencies
                 # Convert ROS timestamp to seconds
                 input_timestamp = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
-                current_time = publish_time
+
+                # Get current ROS time for accurate end-to-end measurement
+                current_ros_time = self.get_clock().now()
+                current_time_sec = current_ros_time.nanoseconds * 1e-9
 
                 # Total latency from point cloud capture to pose publish
-                end_to_end_latency = (current_time - input_timestamp) * 1000  # ms
+                end_to_end_latency = (current_time_sec - input_timestamp) * 1000  # ms
 
                 # Processing time (callback start to publish)
                 processing_time = (publish_time - callback_start_time) * 1000  # ms

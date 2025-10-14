@@ -54,6 +54,19 @@ class PoseDetector(Node):
         # Load model
         self.load_model()
 
+        # Pre-allocate rotation matrices (avoid recreating them each time)
+        self.rotation_x_90 = np.array([
+            [1, 0, 0],
+            [0, 0, 1],
+            [0, -1, 0]
+        ], dtype=np.float32)
+
+        self.rotation_x_neg90 = np.array([
+            [1, 0, 0],
+            [0, 0, -1],
+            [0, 1, 0]
+        ], dtype=np.float32)
+
         # Create subscribers and publishers
         self.pc_subscriber = self.create_subscription(
             PointCloud2,
@@ -104,28 +117,31 @@ class PoseDetector(Node):
             raise
 
     def pointcloud_to_numpy(self, pc_msg):
-        """Convert ROS2 PointCloud2 message to numpy array"""
-        import struct
+        """Convert ROS2 PointCloud2 message to numpy array (optimized)"""
+        # Use numpy to parse the data directly (much faster than Python loops)
+        # Assuming xyz point cloud with float32 data
+        dtype = np.dtype([
+            ('x', np.float32),
+            ('y', np.float32),
+            ('z', np.float32),
+        ])
 
-        # Extract point data
-        points = []
-        point_step = pc_msg.point_step
-        row_step = pc_msg.row_step
+        # Convert byte data to structured array
+        cloud_array = np.frombuffer(pc_msg.data, dtype=dtype)
 
-        for v in range(pc_msg.height):
-            for u in range(pc_msg.width):
-                byte_offset = v * row_step + u * point_step
+        # Reshape if needed (for organized point clouds)
+        if pc_msg.height > 1:
+            cloud_array = cloud_array.reshape((pc_msg.height, pc_msg.width))
+            cloud_array = cloud_array.reshape(-1)  # Flatten back
 
-                # Extract x, y, z (assuming float32)
-                x = struct.unpack_from('f', pc_msg.data, byte_offset)[0]
-                y = struct.unpack_from('f', pc_msg.data, byte_offset + 4)[0]
-                z = struct.unpack_from('f', pc_msg.data, byte_offset + 8)[0]
+        # Extract x, y, z and stack into (N, 3) array
+        points = np.column_stack((cloud_array['x'], cloud_array['y'], cloud_array['z']))
 
-                # Filter out invalid points
-                if not (np.isnan(x) or np.isnan(y) or np.isnan(z)):
-                    points.append([x, y, z])
+        # Filter out invalid points (NaN or Inf)
+        valid_mask = np.isfinite(points).all(axis=1)
+        points = points[valid_mask]
 
-        return np.array(points, dtype=np.float32)
+        return points.astype(np.float32)
 
     def preprocess_pointcloud(self, points):
         """
@@ -138,15 +154,8 @@ class PoseDetector(Node):
         if len(points) == 0:
             return None
 
-        # Step 1: Rotate around x-axis by 90 degrees (counter-clockwise)
-        # Rotation matrix for 90 degrees around x-axis
-        rotation_x_90 = np.array([
-            [1, 0, 0],
-            [0, 0, 1],
-            [0, -1, 0]
-        ], dtype=np.float32)
-
-        points_rotated = np.dot(points, rotation_x_90.T)
+        # Step 1: Rotate around x-axis by 90 degrees (use pre-allocated matrix)
+        points_rotated = np.dot(points, self.rotation_x_90.T)
 
         # Step 2: Convert from meters to millimeters
         points_mm = points_rotated * 1000.0
@@ -183,15 +192,8 @@ class PoseDetector(Node):
         # Step 2: Convert from millimeters to meters
         joints_m = joints_world / 1000.0
 
-        # Step 3: Rotate back around x-axis by -90 degrees (clockwise)
-        # Rotation matrix for -90 degrees around x-axis (inverse of preprocessing)
-        rotation_x_neg90 = np.array([
-            [1, 0, 0],
-            [0, 0, -1],
-            [0, 1, 0]
-        ], dtype=np.float32)
-
-        joints_original = np.dot(joints_m, rotation_x_neg90.T)
+        # Step 3: Rotate back around x-axis by -90 degrees (use pre-allocated matrix)
+        joints_original = np.dot(joints_m, self.rotation_x_neg90.T)
 
         return joints_original
 
@@ -210,21 +212,23 @@ class PoseDetector(Node):
             # We replicate the single frame to match training format (frames_per_clip=3)
             frames_per_clip = 3  # Match training configuration
             points_expanded = np.repeat(points_tensor[np.newaxis, :, :], frames_per_clip, axis=0)  # (3, 2048, 3)
-            input_tensor = torch.from_numpy(points_expanded).unsqueeze(0).to(self.device)  # (1, 3, 2048, 3)
 
             # Debug info
             self.get_logger().debug(f'Input points shape: {points.shape}')
             self.get_logger().debug(f'Preprocessed points shape: {points_tensor.shape}')
             self.get_logger().debug(f'Centroid shape: {centroid.shape}')
-            self.get_logger().debug(f'Input tensor shape: {input_tensor.shape}')
 
             # Run inference
             inference_start = time.time()
+
+            input_tensor = torch.from_numpy(points_expanded).unsqueeze(0).to(self.device)  # (1, 3, 2048, 3)
+            self.get_logger().debug(f'Input tensor shape: {input_tensor.shape}')
+
             with torch.no_grad():
                 output = self.model(input_tensor)
-
                 # Reshape output from (1, 45) to (15, 3) - 15 joints, 3 coordinates each
                 joints_pred = output.reshape(-1, 3).cpu().numpy()  # Should be (15, 3)
+
             inference_time = (time.time() - inference_start) * 1000  # ms
 
             # Postprocess back to original coordinate system

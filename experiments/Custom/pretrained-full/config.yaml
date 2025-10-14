@@ -9,9 +9,9 @@ mode_val: true
 use_valid_only: true
 
 # Data paths
-experiments_path: '/home/oliver/Documents/SPiKE/'
-dataset_path: '/home/oliver/Documents/data/Mocap_dataset'
-data_output_path: '/home/oliver/Documents/data/Mocap_dataset'
+experiments_path: '/home/wheeltec/Documents/spike/'
+dataset_path: '/home/wheeltec/Documents/data/Mocap_dataset'
+data_output_path: '/home/wheeltec/Documents/data/Mocap_dataset'
 
 
 # input

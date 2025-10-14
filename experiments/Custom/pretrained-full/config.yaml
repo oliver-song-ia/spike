@@ -9,9 +9,9 @@ mode_val: true
 use_valid_only: true
 
 # Data paths
-experiments_path: '/home/oliver/Documents/SPiKE/'
-dataset_path: '/home/oliver/Documents/data/Mocap_dataset'
-data_output_path: '/home/oliver/Documents/data/Mocap_dataset'
+experiments_path: '/home/choon/Documents/spike/'
+dataset_path: '/home/choon/Documents/data/Mocap_dataset'
+data_output_path: '/home/choon/Documents/data/Mocap_dataset'
 
 
 # input
@@ -53,7 +53,7 @@ lr_warmup_epochs: 3
 # output
 log_dir: "log"
     # resume
-resume: '/home/oliver/Documents/SPiKE/experiments/Custom/pretrained-full/best_model.pth'
+resume: '/home/choon/Documents/spike/experiments/Custom/pretrained-full/log/best_model.pth'
 finetune: true
 start_epoch: 0
     # losses
